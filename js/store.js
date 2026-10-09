@@ -24,8 +24,10 @@ const Store = (() => {
   const defaults = () => ({
     students: [],
     lessons: [],
-    settings: { currency: '₽', duration: 60, dayStart: 8, dayEnd: 22, goal: 0, theme: 'auto' },
-    meta: { lastBackup: null, created: Date.now() },
+    credits: [], // оплаты вперёд / поступления: {id, studentId, date, amount, note}
+    offs: [],    // выходные и отпуск: {id, from, to, note}
+    settings: { currency: '₽', duration: 60, dayStart: 8, dayEnd: 22, goal: 0, theme: 'auto', horizon: 8 },
+    meta: { lastBackup: null, created: Date.now(), demo: false },
   });
 
   function normalize(d) {
@@ -33,6 +35,8 @@ const Store = (() => {
     return {
       students: Array.isArray(d.students) ? d.students : [],
       lessons: Array.isArray(d.lessons) ? d.lessons : [],
+      credits: Array.isArray(d.credits) ? d.credits : [],
+      offs: Array.isArray(d.offs) ? d.offs : [],
       settings: { ...def.settings, ...(d.settings || {}) },
       meta: { ...def.meta, ...(d.meta || {}) },
     };
@@ -53,14 +57,82 @@ const Store = (() => {
     catch (e) { storageOk = false; console.warn('Не удалось сохранить данные', e); }
   }
 
+  const sortLessons = (a, b) => (a.date + a.time).localeCompare(b.date + b.time);
+  const price = (l) => Number(l.price) || 0;
+  const nowKey = () => D.today() + T.fromMin(D.nowMinutes());
+
+  /* Предоплата: баланс = все оплаты − уроки, оплаченные «с баланса». Новые уроки списываются автоматически. */
+  function balanceOf(sid) {
+    const credit = data.credits.filter((c) => c.studentId === sid).reduce((a, c) => a + (Number(c.amount) || 0), 0);
+    const used = data.lessons.filter((l) => l.studentId === sid && PAYABLE.has(l.status) && l.paid && l.paidBy === 'credit')
+      .reduce((a, l) => a + price(l), 0);
+    return credit - used;
+  }
+
+  function settle() {
+    const today = D.today();
+    for (const s of data.students) {
+      let bal = balanceOf(s.id);
+      if (bal < 0) { // оплату удалили — снимаем отметку с последних уроков
+        const paid = data.lessons.filter((l) => l.studentId === s.id && PAYABLE.has(l.status) && l.paid && l.paidBy === 'credit').sort(sortLessons).reverse();
+        for (const l of paid) { if (bal >= 0) break; l.paid = false; l.paidBy = null; bal += price(l); }
+      }
+      if (bal <= 0) continue;
+      const unpaid = data.lessons.filter((l) => l.studentId === s.id && PAYABLE.has(l.status) && !l.paid && !l.noAuto && l.date <= today && price(l) > 0).sort(sortLessons);
+      for (const l of unpaid) {
+        if (bal < price(l)) break;
+        l.paid = true; l.paidBy = 'credit'; l.paidDate = today; bal -= price(l);
+      }
+    }
+  }
+
+  /* Регулярное расписание: создаёт уроки на несколько недель вперёд. Возвращает число созданных. */
+  function generateRegular() {
+    const today = D.today();
+    const horizon = D.add(today, Math.max(2, Number(data.settings.horizon) || 8) * 7);
+    let added = 0;
+    for (const s of data.students) {
+      if (s.archived || !Array.isArray(s.regular) || !s.regular.length) continue;
+      const have = new Set(data.lessons.filter((l) => l.studentId === s.id).map((l) => l.slot || `${l.date}|${l.time}`));
+      const skip = new Set(s.skips || []);
+      for (let d = today; d <= horizon; d = D.add(d, 1)) {
+        const wd = D.weekdayIdx(d);
+        for (const r of s.regular) {
+          if (r.wd !== wd) continue;
+          const key = `${d}|${r.time}`;
+          if (have.has(key) || skip.has(key)) continue;
+          if (data.offs.some((o) => d >= o.from && d <= o.to)) continue;
+          if (d === today && key <= nowKey()) continue; // уроки, которые уже должны были пройти, не создаём
+          data.lessons.push({
+            id: uid(), studentId: s.id, lang: r.lang || (s.lang === 'zh' ? 'zh' : 'en'), date: d, time: r.time,
+            duration: Number(r.duration) || Number(s.duration) || 60, price: Number(s.price) || 0, status: 'planned', paid: false,
+            topic: '', covered: '', words: '', homework: '', note: '', seriesId: `reg-${s.id}-${r.wd}-${r.time}`, slot: key, auto: true,
+          });
+          have.add(key); added++;
+        }
+      }
+    }
+    return added;
+  }
+
+  /* Убирает будущие нетронутые уроки, которых больше нет в регулярном расписании */
+  function cleanupRegular(s) {
+    const now = nowKey();
+    const rows = new Set((s.regular || []).map((r) => `${r.wd}|${r.time}`));
+    const drop = data.lessons.filter((l) => l.studentId === s.id && l.auto && l.status === 'planned' && !l.paid
+      && `${l.date}|${l.time}` === l.slot && l.date + l.time > now
+      && !(l.topic || l.covered || l.words || l.homework || l.note)
+      && (s.archived || !rows.has(`${D.weekdayIdx(l.date)}|${l.time}`)));
+    const ids = new Set(drop.map((l) => l.id));
+    data.lessons = data.lessons.filter((l) => !ids.has(l.id));
+  }
+
   function emit() { listeners.forEach((fn) => fn()); }
-  function commit() { persist(); emit(); }
+  function commit() { settle(); persist(); emit(); }
 
   window.addEventListener('storage', (e) => {
     if (e.key === KEY) { data = load(); emit(); }
   });
-
-  const sortLessons = (a, b) => (a.date + a.time).localeCompare(b.date + b.time);
 
   const api = {
     get data() { return data; },
@@ -76,25 +148,52 @@ const Store = (() => {
         .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     },
     saveStudent(s) {
+      let saved;
       if (!s.id) {
         s.id = uid();
         s.created = Date.now();
         if (!s.color) s.color = COLORS[data.students.length % COLORS.length];
+        s.skips = s.skips || [];
         data.students.push(s);
+        saved = s;
       } else {
         const i = data.students.findIndex((x) => x.id === s.id);
         data.students[i] = { ...data.students[i], ...s };
+        saved = data.students[i];
       }
+      cleanupRegular(saved);
+      generateRegular();
       commit();
-      return s;
+      return saved;
     },
     deleteStudent(id) {
       const removedStudent = api.student(id);
       const removedLessons = data.lessons.filter((l) => l.studentId === id);
+      const removedCredits = data.credits.filter((c) => c.studentId === id);
       data.students = data.students.filter((s) => s.id !== id);
       data.lessons = data.lessons.filter((l) => l.studentId !== id);
+      data.credits = data.credits.filter((c) => c.studentId !== id);
       commit();
-      return () => { data.students.push(removedStudent); data.lessons.push(...removedLessons); commit(); };
+      return () => { data.students.push(removedStudent); data.lessons.push(...removedLessons); data.credits.push(...removedCredits); commit(); };
+    },
+    /* Изменить цену/длительность во всех будущих запланированных уроках ученика */
+    updateFuture(studentId, patch) {
+      const now = nowKey();
+      let n = 0;
+      data.lessons.forEach((l) => {
+        if (l.studentId === studentId && l.status === 'planned' && l.date + l.time > now) { Object.assign(l, patch); n++; }
+      });
+      commit();
+      return n;
+    },
+    futureCount(studentId, field, value) {
+      const now = nowKey();
+      return data.lessons.filter((l) => l.studentId === studentId && l.status === 'planned' && l.date + l.time > now && Number(l[field]) !== Number(value)).length;
+    },
+    removeRegularRow(studentId, wd, time) {
+      const s = api.student(studentId);
+      if (!s) return;
+      s.regular = (s.regular || []).filter((r) => !(r.wd === wd && r.time === time));
     },
 
     /* ----- уроки ----- */
@@ -123,9 +222,19 @@ const Store = (() => {
     deleteLessons(ids) {
       const set = new Set(ids);
       const removed = data.lessons.filter((l) => set.has(l.id));
+      const tombs = [];
+      // уроки из регулярного расписания не должны появиться снова
+      removed.forEach((l) => {
+        const s = api.student(l.studentId);
+        if (s && l.slot && !(s.skips || []).includes(l.slot)) { s.skips = [...(s.skips || []), l.slot]; tombs.push([s, l.slot]); }
+      });
       data.lessons = data.lessons.filter((l) => !set.has(l.id));
       commit();
-      return () => { data.lessons.push(...removed); commit(); };
+      return () => {
+        data.lessons.push(...removed);
+        tombs.forEach(([s, slot]) => { s.skips = (s.skips || []).filter((x) => x !== slot); });
+        commit();
+      };
     },
     seriesFrom(lesson) {
       if (!lesson.seriesId) return [lesson];
@@ -137,10 +246,15 @@ const Store = (() => {
         .sort((a, b) => sortLessons(b, a))[0];
     },
     nextLesson(studentId) {
-      const now = D.today() + T.fromMin(D.nowMinutes());
+      const now = nowKey();
       return data.lessons
         .filter((l) => l.studentId === studentId && l.status === 'planned' && (l.date + l.time) >= now)
         .sort(sortLessons)[0];
+    },
+    /* Ближайший непроведённый урок (сегодня или позже) */
+    upcoming(limit = 1) {
+      const now = nowKey();
+      return data.lessons.filter((l) => l.status === 'planned' && l.date + T.end(l.time, l.duration) > now).sort(sortLessons).slice(0, limit);
     },
     conflicts(date, time, duration, excludeId) {
       const a = T.toMin(time), b = a + Number(duration);
@@ -149,16 +263,65 @@ const Store = (() => {
     },
     /* Уроки, которые уже должны были пройти, но не отмечены */
     needsMarking() {
-      const now = D.today() + T.fromMin(D.nowMinutes());
+      const now = nowKey();
       return data.lessons.filter((l) => l.status === 'planned' && (l.date + T.end(l.time, l.duration)) <= now).sort(sortLessons);
     },
+    search(q) {
+      q = q.trim().toLowerCase();
+      if (!q) return { students: [], lessons: [] };
+      const students = data.students.filter((s) => [s.name, s.contact, s.notes, s.level].join(' ').toLowerCase().includes(q)).slice(0, 6);
+      const lessons = data.lessons.filter((l) => [l.topic, l.covered, l.words, l.homework, l.note].join(' ').toLowerCase().includes(q))
+        .sort((a, b) => sortLessons(b, a)).slice(0, 8);
+      return { students, lessons };
+    },
 
-    /* ----- настройки ----- */
-    saveSettings(patch) { Object.assign(data.settings, patch); commit(); },
+    /* ----- оплаты и баланс ----- */
+    balance: balanceOf,
+    credits(studentId) { return data.credits.filter((c) => c.studentId === studentId).sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)); },
+    addPayment(studentId, amount, { date = D.today(), note = '' } = {}) {
+      const c = { id: uid(), studentId, date, amount: Number(amount) || 0, note };
+      data.credits.push(c);
+      commit();
+      return c;
+    },
+    deletePayment(id) {
+      const removed = data.credits.find((c) => c.id === id);
+      data.credits = data.credits.filter((c) => c.id !== id);
+      commit();
+      return () => { data.credits.push(removed); commit(); };
+    },
+
+    /* ----- выходные и отпуск ----- */
+    offOn(date) { return data.offs.find((o) => date >= o.from && date <= o.to); },
+    addOff(off) { off.id = uid(); data.offs.push(off); generateRegular(); commit(); return off; },
+    deleteOff(id) {
+      const removed = data.offs.find((o) => o.id === id);
+      data.offs = data.offs.filter((o) => o.id !== id);
+      generateRegular();
+      commit();
+      return () => { data.offs.push(removed); commit(); };
+    },
+    /* Отменяет запланированные уроки в периоде. Возвращает функцию отмены действия. */
+    cancelRange(from, to) {
+      const ls = data.lessons.filter((l) => l.status === 'planned' && l.date >= from && l.date <= to);
+      ls.forEach((l) => { l.status = 'canceled'; });
+      commit();
+      return { count: ls.length, undo() { ls.forEach((l) => { l.status = 'planned'; }); commit(); } };
+    },
+    countPlanned(from, to) { return data.lessons.filter((l) => l.status === 'planned' && l.date >= from && l.date <= to).length; },
+
+    /* ----- настройки и резервные копии ----- */
+    saveSettings(patch) {
+      Object.assign(data.settings, patch);
+      if (patch.horizon) generateRegular();
+      commit();
+    },
     markBackup() { data.meta.lastBackup = Date.now(); commit(); },
+    noteBackup() { data.meta.lastBackup = Date.now(); persist(); },
+    ensureRegular() { const n = generateRegular(); if (n) commit(); return n; },
 
     exportJSON() {
-      return JSON.stringify({ app: 'tutor-planner', version: 1, exported: new Date().toISOString(), ...data }, null, 2);
+      return JSON.stringify({ app: 'tutor-planner', version: 2, exported: new Date().toISOString(), ...data }, null, 2);
     },
     importJSON(text) {
       const parsed = JSON.parse(text);
@@ -167,7 +330,7 @@ const Store = (() => {
       commit();
     },
     reset() { data = defaults(); commit(); },
-    loadDemo() { data = Demo.build(); commit(); },
+    loadDemo() { data = Demo.build(); generateRegular(); commit(); },
   };
   return api;
 })();
@@ -189,7 +352,33 @@ const Calc = {
   },
   /* неоплаченные проведённые уроки за всё время */
   debts() {
-    return Store.data.lessons.filter((l) => PAYABLE.has(l.status) && !l.paid && l.date <= D.today());
+    return Store.data.lessons.filter((l) => PAYABLE.has(l.status) && !l.paid && l.date <= D.today() && (Number(l.price) || 0) > 0);
+  },
+  /* кто сколько должен (с учётом предоплаты) */
+  dueRows() {
+    const by = {};
+    Calc.debts().forEach((l) => { (by[l.studentId] = by[l.studentId] || []).push(l); });
+    return Object.entries(by).map(([sid, ls]) => {
+      const s = Store.student(sid);
+      const sum = ls.reduce((a, l) => a + (Number(l.price) || 0), 0);
+      const bal = Math.max(0, Store.balance(sid));
+      return { s, ls, sum, balance: bal, due: Math.max(0, sum - bal) };
+    }).filter((r) => r.s && r.due > 0).sort((a, b) => b.due - a.due);
+  },
+  prepaidTotal() {
+    return Store.data.students.reduce((a, s) => a + Math.max(0, Store.balance(s.id)), 0);
+  },
+  /* реально поступившие деньги за период (по дате оплаты) */
+  cash(from, to) {
+    let sum = 0;
+    Store.data.credits.forEach((c) => { if (c.date >= from && c.date <= to) sum += Number(c.amount) || 0; });
+    Store.data.lessons.forEach((l) => {
+      if (PAYABLE.has(l.status) && l.paid && l.paidBy !== 'credit') {
+        const d = l.paidDate || l.date;
+        if (d >= from && d <= to) sum += Number(l.price) || 0;
+      }
+    });
+    return sum;
   },
   money(n) {
     const v = Math.round(Number(n) || 0);
@@ -201,20 +390,19 @@ const Calc = {
 const Demo = {
   build() {
     const d = {
-      students: [],
-      lessons: [],
+      students: [], lessons: [], credits: [], offs: [],
       settings: { ...Store.settings, goal: 90000 },
-      meta: { lastBackup: Date.now(), created: Date.now() },
+      meta: { lastBackup: Date.now(), created: Date.now(), demo: true },
     };
-    const mk = (name, lang, level, price, duration, contact, notes, color) => {
-      const s = { id: uid(), name, lang, level, price, duration, contact, notes, color, created: Date.now() };
+    const mk = (name, lang, level, price, duration, contact, notes, color, regular) => {
+      const s = { id: uid(), name, lang, level, price, duration, contact, notes, color, created: Date.now(), skips: [], regular };
       d.students.push(s); return s;
     };
-    const anna = mk('Анна Соколова', 'en', 'B1', 1800, 60, '@anna_sok', 'Готовится к IELTS, цель — 6.5. Любит разговорную практику.', COLORS[0]);
-    const maxim = mk('Максим', 'zh', 'HSK 2', 2000, 60, '+7 900 123-45-67', 'Учит китайский для работы. Сложно даются тоны.', COLORS[5]);
-    const kira = mk('Кира (8 лет)', 'en', 'A1', 1400, 45, 'Мама: Ольга, +7 911 000-11-22', 'Занятия в игровой форме, карточки и песни.', COLORS[2]);
-    const dima = mk('Дмитрий Орлов', 'zh', 'HSK 4', 2400, 90, '@dorlov', 'Готовится к HSK 4 на весну.', COLORS[1]);
-    const group = mk('Группа «Бизнес-английский»', 'en', 'B2', 3600, 90, '', 'Три человека, четверг вечером.', COLORS[4]);
+    const anna = mk('Анна Соколова', 'en', 'B1', 1800, 60, '@anna_sok', 'Готовится к IELTS, цель — 6.5. Любит разговорную практику.', COLORS[0], [{ wd: 0, time: '16:00' }, { wd: 3, time: '16:00' }]);
+    const maxim = mk('Максим', 'zh', 'HSK 2', 2000, 60, '+7 900 123-45-67', 'Учит китайский для работы. Сложно даются тоны.', COLORS[5], [{ wd: 1, time: '18:00' }, { wd: 5, time: '11:00' }]);
+    const kira = mk('Кира (8 лет)', 'en', 'A1', 1400, 45, 'Мама: Ольга, +7 911 000-11-22', 'Занятия в игровой форме, карточки и песни.', COLORS[2], [{ wd: 2, time: '15:00' }, { wd: 5, time: '13:00' }]);
+    const dima = mk('Дмитрий Орлов', 'zh', 'HSK 4', 2400, 90, '@dorlov', 'Готовится к HSK 4 на весну. Платит вперёд пакетами.', COLORS[1], [{ wd: 4, time: '17:30' }]);
+    const group = mk('Группа «Бизнес-английский»', 'en', 'B2', 3600, 90, '', 'Три человека, четверг вечером.', COLORS[4], [{ wd: 3, time: '19:00' }]);
 
     const topics = {
       [anna.id]: [
@@ -244,33 +432,42 @@ const Demo = {
 
     const today = D.today();
     const wk = D.weekStart(today);
-    // расписание на неделю: [студент, смещение от понедельника, время]
-    const pattern = [
-      [anna, 0, '16:00'], [maxim, 1, '18:00'], [kira, 2, '15:00'], [anna, 3, '16:00'],
-      [group, 3, '19:00'], [dima, 4, '17:30'], [maxim, 5, '11:00'], [kira, 5, '13:00'],
-    ];
+    const nowStr = today + T.fromMin(D.nowMinutes());
     const counters = {};
-    for (let w = -5; w <= 2; w++) {
-      for (const [st, off, time] of pattern) {
-        const date = D.add(wk, w * 7 + off);
-        const dateTime = date + time;
-        const nowStr = today + T.fromMin(D.nowMinutes());
-        let status = 'planned', paid = false;
-        if (dateTime < nowStr) {
-          status = 'done';
-          paid = D.add(date, 10) < today || Math.random() > 0.3;
-          if (Math.random() < 0.06) { status = 'canceled'; paid = false; }
+    let k = 0;
+    const past = [];
+    for (let w = -6; w <= 0; w++) {
+      for (const st of d.students) {
+        for (const r of st.regular) {
+          const date = D.add(wk, w * 7 + r.wd);
+          const dateTime = date + r.time;
+          const n = (counters[st.id] = (counters[st.id] || 0) + 1);
+          k++;
+          let status = 'planned', paid = false, paidBy = null, paidDate = null;
+          if (dateTime < nowStr) {
+            status = k % 17 === 0 ? 'canceled' : 'done';
+            if (status === 'done') {
+              // Дмитрий платит вперёд (баланс), остальные — по-разному
+              if (st !== dima && (D.add(date, 9) < today || k % 3 !== 0)) { paid = true; paidBy = 'cash'; paidDate = D.add(date, k % 3); if (paidDate > today) paidDate = today; }
+            }
+          }
+          const rec = status === 'done' ? (topics[st.id] || [])[(n - 1) % (topics[st.id] || [1]).length] : null;
+          const l = {
+            id: uid(), studentId: st.id, lang: st.lang, date, time: r.time, duration: st.duration, price: st.price,
+            status, paid, paidBy, paidDate, topic: rec ? rec[0] : '', covered: rec ? rec[1] : '', words: rec ? rec[2] : '',
+            homework: rec ? rec[3] : '', note: '', seriesId: `reg-${st.id}-${r.wd}-${r.time}`, slot: `${date}|${r.time}`, auto: true,
+          };
+          d.lessons.push(l);
+          if (dateTime < nowStr) past.push(l);
         }
-        const n = (counters[st.id] = (counters[st.id] || 0) + 1);
-        const rec = status === 'done' ? (topics[st.id] || [])[(n - 1) % (topics[st.id] || [1]).length] : null;
-        d.lessons.push({
-          id: uid(), studentId: st.id, lang: st.lang, date, time, duration: st.duration, price: st.price,
-          status, paid, topic: rec ? rec[0] : '', covered: rec ? rec[1] : '', words: rec ? rec[2] : '',
-          homework: rec ? rec[3] : '', note: '', seriesId: `${st.id}-${off}-${time}`,
-        });
       }
     }
-    // пара «не отмеченных» уроков сегодня утром не нужна — оставляем как есть
+    // последний прошедший урок оставляем неотмеченным — чтобы показать подсказку «Отметьте проведённые»
+    const last = past.filter((l) => l.status === 'done').sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time))[0];
+    if (last && last.date === today) { last.status = 'planned'; last.paid = false; last.paidBy = null; last.topic = last.covered = last.words = last.homework = ''; }
+    d.credits.push({ id: uid(), studentId: dima.id, date: D.add(today, -20), amount: 7200, note: 'Пакет на 3 урока' });
+    d.credits.push({ id: uid(), studentId: dima.id, date: D.add(today, -3), amount: 2400, note: '' });
+    d.credits.push({ id: uid(), studentId: kira.id, date: D.add(today, -1), amount: 5600, note: 'Предоплата: 4 урока' });
     return d;
   },
 };
