@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ru" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Мои уроки · планер репетитора</title>
+  <meta name="description" content="Расписание, записи уроков и учёт заработка для репетитора английского и китайского языков">
+  <meta name="theme-color" content="#f5f4f0">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Мои уроки">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main"><div id="view" class="view"></div></main>
+    <nav class="tabbar" id="tabbar"></nav>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+  <noscript><p style="padding:24px">Для работы приложения нужен JavaScript.</p></noscript>
+
+  <script src="js/util.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/components.js"></script>
+  <script src="js/forms.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>
