@@ -19,7 +19,7 @@ const UI = {
       if (e.target === el && dismissable) UI.close();
     });
     if (onMount) onMount($('.sheet', el));
-    const focusable = $('[autofocus], input:not([type=hidden]), textarea, select', el);
+    const focusable = $('[autofocus], input:not([type=hidden]):not([type=radio]):not([type=checkbox]), textarea, select', el);
     if (focusable && window.innerWidth > 700) focusable.focus();
     return entry;
   },

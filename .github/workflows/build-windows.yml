@@ -13,9 +13,6 @@ on:
       - 'electron/**'
       - 'installer/**'
       - 'scripts/**'
-      - 'server/**'
-      - 'sw.js'
-      - 'manifest.webmanifest'
       - '.github/workflows/build-windows.yml'
 permissions:
   contents: write
@@ -45,32 +42,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Мои уроки ${{ steps.ver.outputs.v }}
           body: |
-            **Для компьютера (Windows 10/11, 64-бит):** скачайте `Moi-uroki-Ustanovshchik-*.exe` и запустите. Если Windows покажет предупреждение, нажмите «Подробнее → Выполнить в любом случае»: установщик пока не подписан сертификатом.
-
-            **Для телефона (iPhone):** загрузите `moi-uroki-hosting-*.zip` на хостинг по инструкции: https://github.com/mrcreate163/english-teacher/blob/main/docs/HOSTING.md
+            Установщик для Windows 10/11 (64-бит): скачайте файл `Moi-uroki-Ustanovshchik-*.exe` ниже и запустите. Если Windows покажет предупреждение, нажмите «Подробнее → Выполнить в любом случае»: установщик пока не подписан сертификатом.
+            Памятка по работе с программой: https://github.com/mrcreate163/english-teacher/blob/main/docs/GUIDE.md
           files: dist/Moi-uroki-Ustanovshchik-*.exe
           make_latest: true
 
-  hosting:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 22 }
-      - run: npm ci
-      - name: Проверить PHP-сервер
-        run: php -l server/api/index.php
-      - run: npm run hosting
-      - name: Версия
-        id: ver
-        run: echo "v=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Moi-uroki-hosting
-          path: dist/moi-uroki-hosting-*.zip
-      - name: Приложить архив для хостинга к релизу
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.ver.outputs.v }}
-          files: dist/moi-uroki-hosting-*.zip

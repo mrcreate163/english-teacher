@@ -25,32 +25,8 @@ const WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 function pageHead(title, sub = '', actions = '') {
   return `<header class="page-head">
     <div class="page-title"><h1>${esc(title)}</h1>${sub ? `<p class="muted">${esc(sub)}</p>` : ''}</div>
-    <div class="page-actions">${actions}${syncButton()}<a class="icon-btn head-gear" href="#/settings" aria-label="Настройки">${icon('settings')}</a></div>
+    <div class="page-actions">${actions}<a class="icon-btn head-gear" href="#/settings" aria-label="Настройки">${icon('settings')}</a></div>
   </header>`;
-}
-
-function syncAgo(ts) {
-  if (!ts) return 'ещё не синхронизировано';
-  const m = Math.round((Date.now() - ts) / 60000);
-  if (m < 1) return 'только что';
-  if (m < 60) return `${m} мин назад`;
-  return new Date(ts).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-}
-
-function syncLabel() {
-  const st = Sync.state;
-  if (st.state === 'syncing') return 'Синхронизация…';
-  if (st.state === 'offline') return 'Нет связи — изменения сохранены на устройстве';
-  if (st.state === 'auth') return 'Неверный пароль синхронизации';
-  if (st.state === 'error') return st.error || 'Ошибка синхронизации';
-  return `Синхронизировано · ${syncAgo(st.last)}`;
-}
-
-function syncButton() {
-  if (!Sync.connected) return '';
-  const st = Sync.state.state;
-  const bad = st === 'offline' || st === 'error' || st === 'auth';
-  return `<button class="icon-btn sync-btn ${bad ? 'bad' : ''} ${st === 'syncing' ? 'spin' : ''}" data-act="sync-now" data-sync-btn aria-label="Синхронизировать" title="${esc(syncLabel())}">${icon(bad ? 'cloudoff' : 'cloud')}</button>`;
 }
 
 function tile(label, value, sub = '', { cls = '', attrs = '', extra = '' } = {}) {
@@ -100,15 +76,12 @@ const Views = {
     const todayList = todays.filter((l) => !shownNeeds.has(l.id));
 
     const upcomingDays = [1, 2, 3, 4, 5, 6].map((i) => D.add(t, i)).map((d) => ({ d, items: Store.lessonsOn(d).filter((l) => l.status !== 'canceled') })).filter((x) => x.items.length).slice(0, 4);
-    const backupStale = !Store.isEmpty() && !Store.data.meta.demo && !window.desktop && !Sync.connected && (!Store.data.meta.lastBackup || Date.now() - Store.data.meta.lastBackup > 30 * 864e5);
+    const backupStale = !Store.isEmpty() && !Store.data.meta.demo && !window.desktop && (!Store.data.meta.lastBackup || Date.now() - Store.data.meta.lastBackup > 30 * 864e5);
 
     if (Store.isEmpty()) return Views._welcome(greet, t);
-    const showConnect = Sync.state.serverHere && !Sync.connected;
 
     return `
-    ${pageHead(`${greet}!`, fmt.cap(fmt.long(t)), `<button class="btn btn-primary hide-mobile" data-act="new-lesson">${icon('plus', 18)} Новый урок</button>`)}
-    ${Views._installHint()}
-    ${showConnect ? Views._connectCard() : ''}
+    ${pageHead(`${greet}!`, fmt.cap(fmt.long(t)), `<button class="btn btn-soft hide-mobile" data-act="phone" title="Отправить расписание на телефон">${icon('smartphone', 18)} На телефон</button><button class="btn btn-primary hide-mobile" data-act="new-lesson">${icon('plus', 18)} Новый урок</button>`)}
     ${Store.data.meta.demo ? `<div class="notice notice-info">${icon('sparkle', 18)}<span><b>Это пример данных</b> — потрогайте всё что угодно. Когда будете готовы, начните с чистого листа.</span><button class="btn btn-primary btn-sm" data-act="reset-all">Начать с нуля</button></div>` : ''}
     ${backupStale ? `<div class="notice notice-info">${icon('download', 18)}<span>Данные хранятся только в этом браузере. Сохраните резервную копию, чтобы ничего не потерять.</span><a class="btn btn-soft btn-sm" href="#/settings">Сохранить копию</a></div>` : ''}
     ${Store.storageOk ? '' : `<div class="notice notice-warn">${icon('alert', 18)}<span>Не удаётся сохранять данные (приватный режим браузера?). Изменения пропадут после закрытия.</span></div>`}
@@ -170,8 +143,6 @@ const Views = {
   _welcome(greet, t) {
     return `
     ${pageHead(`${greet}!`, fmt.cap(fmt.long(t)))}
-    ${Views._installHint()}
-    ${Sync.state.serverHere && !Sync.connected ? Views._connectCard() : ''}
     <section class="card welcome">
       <div class="welcome-art">${icon('sparkle', 28)}</div>
       <h2>Добро пожаловать в «Мои уроки»</h2>
@@ -223,56 +194,6 @@ const Views = {
     </section>`;
   },
 
-  _installHint() {
-    if (!Sync.state.serverHere || !isIOS() || isStandalone() || prefs.get('hideInstall', false)) return '';
-    return `<div class="notice notice-info install-hint">${icon('share', 22)}<span><b>Установите на iPhone как приложение.</b> Нажмите «Поделиться» внизу Safari, затем «На экран «Домой»». Так оно откроется без адресной строки и будет работать без интернета.</span><button class="btn btn-soft btn-sm" data-act="hide-install">Понятно</button></div>`;
-  },
-
-  /* Подключение к данным с компьютера: для телефона достаточно пароля */
-  _connectCard() {
-    const here = Sync.state.serverHere;
-    return `
-    <section class="card connect-card">
-      <div class="connect-ic">${icon('smartphone', 26)}</div>
-      <div class="connect-body">
-        <h2>Подключите данные с компьютера</h2>
-        <p class="muted">${here ? 'Введите пароль синхронизации — тот, что вы задали в программе на компьютере (Настройки → Телефон и синхронизация).' : 'Укажите адрес вашего сайта и придумайте пароль синхронизации: он понадобится и на телефоне.'}</p>
-        <div class="sync-form">
-          ${here ? '' : `<label class="field"><span class="label">Адрес сайта</span><input type="url" id="sync-url" placeholder="https://ваш-сайт.ru" autocapitalize="none" autocorrect="off" spellcheck="false"></label>`}
-          <label class="field"><span class="label">Пароль синхронизации</span><input type="text" id="sync-pass" class="pass-input" placeholder="Введите пароль" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false"></label>
-          <div class="btn-row"><button class="btn btn-primary" data-act="sync-connect">${icon('cloud', 18)} Подключить</button>
-            ${here ? '' : `<button class="btn btn-soft" data-act="sync-gen">Придумать пароль</button>`}</div>
-        </div>
-      </div>
-    </section>`;
-  },
-
-  _syncSettings() {
-    if (!Sync.connected) {
-      return `<section class="card sblock" id="sync-block">
-        <h3>${icon('smartphone', 20)} Телефон и синхронизация</h3>
-        <p class="muted">Расписание и записи будут доступны и на iPhone: смотреть уроки, добавлять и менять их. Данные шифруются на вашем устройстве паролем синхронизации — на сервере лежат только нечитаемые записи.</p>
-        <div class="sync-form">
-          ${Sync.state.serverHere ? '' : `<label class="field"><span class="label">Адрес вашего сайта</span><input type="url" id="sync-url" placeholder="https://ваш-сайт.ru" autocapitalize="none" autocorrect="off" spellcheck="false"></label>`}
-          <label class="field"><span class="label">Пароль синхронизации</span><input type="text" id="sync-pass" class="pass-input" placeholder="Введите пароль" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false"></label>
-          <div class="btn-row"><button class="btn btn-primary" data-act="sync-connect">${icon('cloud', 18)} Подключить</button>
-            <button class="btn btn-soft" data-act="sync-gen">Придумать пароль</button></div>
-          <p class="hint">Запишите пароль: на телефоне вводится тот же. Если его потерять, данные из облака не восстановить (на компьютере они останутся).</p>
-        </div>
-      </section>`;
-    }
-    return `<section class="card sblock" id="sync-block">
-      <h3>${icon('smartphone', 20)} Телефон и синхронизация</h3>
-      <p class="sync-status ${['offline', 'error', 'auth'].includes(Sync.state.state) ? 'warn-text' : ''}" data-sync-status>${esc(syncLabel())}</p>
-      <div class="kv-lite"><span class="muted">Сайт</span><b>${esc(Sync.url.replace(/^https?:\/\//, ''))}</b></div>
-      <div class="kv-lite"><span class="muted">Пароль</span><b class="pass-view" data-pass-view data-pass="${esc(Sync.formatPass(Sync.pass))}">••••• ••••• ••••• •••••</b>
-        <button class="link-btn-plain" data-act="sync-showpass">Показать</button></div>
-      <div class="btn-row"><button class="btn btn-soft" data-act="sync-now">${icon('refresh', 18)} Синхронизировать сейчас</button>
-        <button class="btn btn-ghost" data-act="sync-disconnect">Отключить</button></div>
-      <p class="hint">Для подключения телефона откройте ваш сайт в Safari, нажмите «Поделиться → На экран «Домой»» и введите этот пароль.</p>
-    </section>`;
-  },
-
   _debtsBlock(rows) {
     if (!rows.length) return '';
     return `<section class="block">
@@ -313,7 +234,7 @@ const Views = {
     const planMin = rangeLessons.filter((l) => l.status === 'planned').reduce((a, l) => a + l.duration, 0);
 
     return `
-    ${pageHead('Расписание', '', `<button class="btn btn-soft" data-act="open-offs" title="Отпуск, болезнь, праздники">${icon('palm', 18)}<span class="hide-mobile">Выходные</span></button>
+    ${pageHead('Расписание', '', `<button class="btn btn-soft hide-mobile" data-act="phone" title="Отправить расписание на телефон">${icon('smartphone', 18)} На телефон</button><button class="btn btn-soft" data-act="open-offs" title="Отпуск, болезнь, праздники">${icon('palm', 18)}<span class="hide-mobile">Выходные</span></button>
       <button class="btn btn-primary hide-mobile" data-act="new-lesson" data-date="${date}">${icon('plus', 18)} Новый урок</button>`)}
     <div class="sched-bar">
       <div class="sched-nav">
@@ -733,8 +654,6 @@ const Views = {
         </div>
       </section>
 
-      ${Views._syncSettings()}
-
       <section class="card sblock">
         <h3>Работа и доход</h3>
         <div class="grid2">
@@ -756,9 +675,7 @@ const Views = {
         <h3>Резервная копия</h3>
         ${desk ? `<p class="muted">Программа сама сохраняет копию данных каждый день в папку на вашем компьютере. Если что-то случится, их можно восстановить.</p>
           <p class="backup-status">${esc(desk.backupDir || '')}</p>`
-          : Sync.connected
-            ? `<p class="muted">Ваши данные есть на всех подключённых устройствах и в вашем облаке (в зашифрованном виде). Файл-копию всё равно полезно иногда сохранять.</p>`
-            : `<p class="muted">Данные хранятся только в этом браузере на этом устройстве. Сохраняйте файл-копию раз в неделю-две — и восстановить всё можно будет на любом устройстве.</p>`}
+          : `<p class="muted">Данные хранятся только в этом браузере на этом устройстве. Сохраняйте файл-копию раз в неделю-две — и восстановить всё можно будет на любом устройстве.</p>`}
         <p class="backup-status ${last ? '' : 'warn-text'}">${last ? `Последняя копия: ${new Date(last).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}` : 'Копия ещё не создавалась'}</p>
         <div class="btn-row">
           <button class="btn btn-primary" data-act="export-json">${icon('download', 18)} Скачать копию</button>

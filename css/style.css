@@ -697,21 +697,6 @@ kbd { font: 600 11px/1 ui-monospace, "SF Mono", Consolas, monospace; padding: 3p
 .pay-preview { margin: 0; }
 .pay-preview span { flex: 1; }
 
-/* синхронизация */
-.sync-btn { position: relative; color: var(--good); }
-.sync-btn.bad { color: var(--warn); }
-.sync-btn.spin .ic { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.connect-card { display: flex; gap: 16px; padding: 20px; margin-bottom: 22px; align-items: flex-start; background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--card)), var(--card) 65%); }
-.connect-ic { flex: none; width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; background: var(--accent); color: var(--accent-ink); }
-.connect-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
-.sync-form { display: flex; flex-direction: column; gap: 12px; max-width: 460px; margin-top: 4px; }
-.pass-input { font-family: ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: .08em; text-transform: uppercase; font-size: 16px; }
-.kv-lite { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
-.kv-lite b { overflow: hidden; text-overflow: ellipsis; }
-.pass-view { font-family: ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: .06em; }
-.sync-status { font-weight: 650; }
-
 /* ===== список по дням, быстрые действия, телефон ===== */
 html { -webkit-tap-highlight-color: transparent; }
 button, .lrow, .lb, .tabbar a, .ds, .chip, .seg label, .scard, .rec { -webkit-touch-callout: none; touch-action: manipulation; }
@@ -763,7 +748,6 @@ button, .lrow, .lb, .tabbar a, .ds, .chip, .seg label, .scard, .rec { -webkit-to
   .hero-price { font-size: 17px; }
   .hero-actions .btn { flex: 1 1 40%; padding-left: 10px; padding-right: 10px; }
   .hero-actions a.btn { flex-basis: 100%; }
-  .connect-card { flex-direction: column; }
   .page-title h1 { font-size: 26px; }
   .sheet-foot .btn { min-height: 46px; }
   .month-grid { grid-template-rows: repeat(var(--rows), minmax(64px, 1fr)); }
@@ -776,4 +760,25 @@ button, .lrow, .lb, .tabbar a, .ds, .chip, .seg label, .scard, .rec { -webkit-to
   .toolbar { gap: 10px; }
 }
 
-.pass-input::placeholder { text-transform: none; letter-spacing: normal; font-family: inherit; }
+
+/* расписание на телефон */
+.side-phone { display: flex; align-items: center; gap: 12px; width: 100%; padding: 11px 14px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font-weight: 550; text-align: left; transition: background .15s, color .15s; }
+.side-phone:hover { background: var(--accent-soft); color: var(--ink); }
+.side-phone kbd { margin-left: auto; opacity: 0; transition: opacity .15s; }
+.side-phone:hover kbd { opacity: .85; }
+.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; align-items: end; }
+.opt { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.opts .switch { grid-column: 1 / -1; }
+.send-cards { display: flex; flex-direction: column; gap: 12px; }
+.send-card { display: flex; gap: 14px; align-items: center; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--card-2); }
+.send-ic { flex: none; width: 46px; height: 46px; display: grid; place-items: center; border-radius: 13px; background: var(--accent-soft); color: var(--accent); }
+.send-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.send-body h3 { font-size: 16px; }
+.send-body p { font-size: 13.5px; }
+.inline-seg { margin-top: 6px; }
+.inline-seg .seg { width: auto; max-width: 100%; }
+.how { border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; }
+.how summary { cursor: pointer; font-weight: 650; }
+.how ol { margin: 10px 0 2px; padding-left: 20px; display: grid; gap: 8px; font-size: 14px; color: var(--muted); }
+.how b { color: var(--ink); }
+@media (max-width: 860px) { .opts { grid-template-columns: 1fr; } .send-card { flex-wrap: wrap; } .send-card .btn { width: 100%; } }

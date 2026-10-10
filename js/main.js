@@ -26,6 +26,7 @@ function renderChrome() {
       ${NAV.map((n) => `<a href="#/${n.id}" data-nav-id="${n.id}">${icon(n.icon)}<span>${n.label}</span><kbd>${n.key}</kbd></a>`).join('')}
     </nav>
     <div class="side-foot">
+      <button class="side-phone" data-act="phone">${icon('smartphone', 20)}<span>На телефон</span><kbd>P</kbd></button>
       <a href="#/settings" data-nav-id="settings">${icon('settings')}<span>Настройки</span></a>
       <button class="side-help" data-act="show-help">${icon('keyboard', 18)}<span>Горячие клавиши</span><kbd>?</kbd></button>
     </div>`;
@@ -119,13 +120,13 @@ function shiftMoney(dir) {
 const Actions = {
   'open-lesson': (el) => (isPhone() ? Forms.quick(el.dataset.id) : Forms.lesson({ id: el.dataset.id })),
   'agenda-more': () => { VS.agendaDays += 14; render(); },
-  'hide-install': () => { prefs.set('hideInstall', true); render(); },
   'new-lesson': (el) => Forms.lesson({ date: el.dataset.date || (route().name === 'schedule' ? VS.schedDate : undefined), studentId: el.dataset.student, time: el.dataset.time }),
   'new-student': () => Forms.student(),
   'edit-student': (el) => Forms.student({ id: el.dataset.id }),
   'edit-regular': (el) => Forms.student({ id: el.dataset.id, focusRegular: true }),
   'report': (el) => Forms.report(el.dataset.id),
   'open-offs': () => Forms.off(),
+  'phone': () => Forms.phone(),
   'open-search': () => openSearch(),
   'show-help': () => showHelp(),
 
@@ -185,64 +186,6 @@ const Actions = {
   'pick-month': (el) => { VS.moneyDate = el.dataset.date; VS.moneyMode = 'month'; render(); },
   'export-csv': exportCSV,
 
-  'sync-gen': () => { const i = $('#sync-pass'); if (i) { i.value = Sync.generatePass(); i.focus(); i.select(); } },
-  'sync-showpass': (el) => {
-    const v = $('[data-pass-view]');
-    if (!v) return;
-    const shown = v.dataset.shown === '1';
-    v.dataset.shown = shown ? '' : '1';
-    v.textContent = shown ? '••••• ••••• ••••• •••••' : v.dataset.pass;
-    el.textContent = shown ? 'Показать' : 'Скрыть';
-    if (!shown) UI.copy(v.dataset.pass, 'Пароль скопирован');
-  },
-  'sync-now': async () => {
-    if (!Sync.connected) { location.hash = '#/settings'; return; }
-    await Sync.run();
-    if (Sync.state.state === 'idle') UI.toast('Всё синхронизировано');
-    else UI.toast(syncLabel());
-  },
-  'sync-disconnect': async () => {
-    const ok = await UI.confirm('Отключить синхронизацию?', 'Данные на этом устройстве останутся, но перестанут обмениваться с другими устройствами. Подключиться снова можно в любой момент тем же паролем.', 'Отключить', false);
-    if (!ok) return;
-    Sync.disconnect();
-    render();
-  },
-  'sync-connect': async (el) => {
-    const urlInput = $('#sync-url');
-    const pass = ($('#sync-pass') || {}).value || '';
-    const url = urlInput ? urlInput.value : (Sync.state.hereUrl || location.origin);
-    if (urlInput && !urlInput.value.trim()) return Forms.invalid(urlInput);
-    if (Sync.normalizePass(pass).length < 8) { UI.toast('Пароль слишком короткий — нажмите «Придумать пароль» или введите пароль с компьютера'); return Forms.invalid($('#sync-pass')); }
-    const label = el.innerHTML;
-    el.disabled = true; el.textContent = 'Проверяю…';
-    const done = () => { el.disabled = false; el.innerHTML = label; };
-    try {
-      const checked = await Sync.inspect(url, pass);
-      if (checked.url.startsWith('http:') && !/^http:\/\/(localhost|127\.)/.test(checked.url)) {
-        const go = await UI.confirm('Сайт открыт без HTTPS', 'Без защищённого соединения (https://) приложение на iPhone работать не будет. Включите HTTPS в панели хостинга. Всё равно продолжить?', 'Продолжить', false);
-        if (!go) { done(); return; }
-      }
-      let mode = 'merge';
-      if (Store.data.meta.demo) {
-        const ok = await UI.confirm('Удалить пример данных?', 'Сейчас в программе пример данных. Перед подключением он будет удалён.', 'Удалить и подключить', false);
-        if (!ok) { done(); return; }
-        Store.wipeData();
-      } else if (checked.count > 0 && !Store.isEmpty()) {
-        mode = await UI.choice('Данные есть и здесь, и на сервере', `На сервере уже есть записи (${checked.count}), и на этом устройстве тоже. Что сделать?`, [
-          { label: 'Объединить (рекомендуется)', value: 'merge', primary: true },
-          { label: 'Оставить только данные с сервера (локальные заменятся)', value: 'server', danger: true },
-        ]);
-        if (!mode) { done(); return; }
-      }
-      await Sync.connect(checked, pass, mode);
-      UI.toast(checked.count === 0 && Store.isEmpty() ? 'Подключено. Сервер пока пустой — добавьте данные или подключите компьютер.' : 'Готово: данные синхронизируются');
-      render();
-    } catch (e) {
-      UI.toast(e.message || 'Не удалось подключиться');
-    }
-    done();
-  },
-
   'export-json': () => {
     UI.download(`moi-uroki-kopiya-${D.today()}.json`, Store.exportJSON());
     Store.markBackup();
@@ -250,7 +193,6 @@ const Actions = {
   },
   'open-backups': () => window.desktop && window.desktop.openBackups(),
   'load-demo': async () => {
-    if (Sync.connected) { UI.toast('Сначала отключите синхронизацию: пример данных не нужно отправлять на сервер'); return; }
     if (!Store.isEmpty()) {
       const ok = await UI.confirm('Заменить данные примером?', 'Все ваши текущие ученики и уроки будут заменены демонстрационными. Сначала сохраните копию, если они вам нужны.', 'Заменить', true);
       if (!ok) return;
@@ -261,7 +203,7 @@ const Actions = {
   'reset-all': async () => {
     const demo = Store.data.meta.demo;
     const ok = await UI.confirm(demo ? 'Начать с чистого листа?' : 'Удалить все данные?',
-      demo ? 'Пример данных будет удалён, и вы сможете добавить своих учеников.' : `Будут удалены все ученики, уроки и записи${Sync.connected ? ' — и на всех подключённых устройствах' : ''}. Это действие нельзя отменить — сначала сохраните копию.`, demo ? 'Начать с нуля' : 'Удалить всё');
+      demo ? 'Пример данных будет удалён, и вы сможете добавить своих учеников.' : `Будут удалены все ученики, уроки и записи. Это действие нельзя отменить — сначала сохраните копию.`, demo ? 'Начать с нуля' : 'Удалить всё');
     if (!ok) return;
     Store.reset();
     location.hash = '#/today';
@@ -383,7 +325,7 @@ document.addEventListener('change', (e) => {
     const reader = new FileReader();
     reader.onload = async () => {
       try { JSON.parse(reader.result); } catch (err) { UI.toast('Не удалось прочитать файл — это точно копия из приложения?'); return; }
-      const ok = await UI.confirm('Восстановить из копии?', `Текущие данные в приложении будут заменены данными из файла${Sync.connected ? ' (изменения уйдут и на другие подключённые устройства)' : ''}.`, 'Восстановить', true);
+      const ok = await UI.confirm('Восстановить из копии?', `Текущие данные в приложении будут заменены данными из файла.`, 'Восстановить', true);
       if (!ok) return;
       try { Store.importJSON(reader.result); UI.toast('Данные восстановлены'); } catch (err) { UI.toast(err.message); }
     };
@@ -409,7 +351,7 @@ function showHelp() {
     <div class="sheet-head"><h2>Горячие клавиши</h2><button class="icon-btn" data-close aria-label="Закрыть">${icon('x')}</button></div>
     <div class="sheet-body">
       <div class="help-group">Везде</div>
-      ${row('N', 'Новый урок')}${row('S', 'Новый ученик')}${row(`${MOD} K`, 'Поиск по ученикам и записям')}${row('1 2 3 4', 'Сегодня · Расписание · Ученики · Доходы')}${row(',', 'Настройки')}${row('Esc', 'Закрыть окно')}
+      ${row('N', 'Новый урок')}${row('S', 'Новый ученик')}${row(`${MOD} K`, 'Поиск по ученикам и записям')}${row('1 2 3 4', 'Сегодня · Расписание · Ученики · Доходы')}${row('P', 'Расписание на телефон')}${row(',', 'Настройки')}${row('Esc', 'Закрыть окно')}
       <div class="help-group">Расписание и доходы</div>
       ${row('← →', 'Назад / вперёд')}${row('T', 'К сегодняшнему дню')}${row('D W M', 'День / неделя / месяц (в расписании)')}
       <div class="help-group">В окне урока или ученика</div>
@@ -436,6 +378,7 @@ document.addEventListener('keydown', (e) => {
   else if (k === '3') go('#/students');
   else if (k === '4') go('#/money');
   else if (k === ',' || k === 'б') go('#/settings');
+  else if (k === 'p' || k === 'з') { e.preventDefault(); Forms.phone(); }
   else if (k === '?' || k === '/') { e.preventDefault(); showHelp(); }
   else if (e.key === 'ArrowLeft') { if (r === 'schedule') { e.preventDefault(); shiftSchedule(-1); } else if (r === 'money') { e.preventDefault(); shiftMoney(-1); } }
   else if (e.key === 'ArrowRight') { if (r === 'schedule') { e.preventDefault(); shiftSchedule(1); } else if (r === 'money') { e.preventDefault(); shiftMoney(1); } }
@@ -454,7 +397,7 @@ function openSearch() {
       ['Новый урок', 'plus', () => Forms.lesson({})], ['Новый ученик', 'plus', () => Forms.student()],
       ['Сегодня', 'sun', () => { location.hash = '#/today'; }], ['Расписание', 'calendar', () => { location.hash = '#/schedule'; }],
       ['Ученики', 'users', () => { location.hash = '#/students'; }], ['Доходы', 'wallet', () => { location.hash = '#/money'; }],
-      ['Выходные и отпуск', 'palm', () => Forms.off()], ['Настройки', 'settings', () => { location.hash = '#/settings'; }],
+      ['Расписание на телефон', 'smartphone', () => Forms.phone()], ['Выходные и отпуск', 'palm', () => Forms.off()], ['Настройки', 'settings', () => { location.hash = '#/settings'; }],
     ];
     if (!q.trim()) { nav.forEach(([t, ic, run]) => out.push({ group: 'Действия', title: t, icon: ic, run })); return out; }
     const res = Store.search(q);
@@ -525,20 +468,10 @@ setInterval(() => {
 }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !UI._stack.length) { Store.ensureRegular(); render(); } });
 
-let syncSig = '';
-Sync.onChange(() => {
-  $$('[data-sync-btn]').forEach((b) => { b.outerHTML = syncButton(); });
-  const st = $('[data-sync-status]');
-  if (st) { st.textContent = syncLabel(); st.classList.toggle('warn-text', ['offline', 'error', 'auth'].includes(Sync.state.state)); }
-  const sig = `${Sync.connected}|${Sync.state.serverHere}`;
-  if (sig !== syncSig) { syncSig = sig; if (!UI._stack.length && !typing()) render(); }
-});
-
 renderChrome();
 applyTheme();
 Store.ensureRegular();
 render();
-Sync.detectServer();
 
 if (window.desktop && Store.isEmpty()) {
   window.desktop.latestBackup().then(async (b) => {
@@ -549,6 +482,3 @@ if (window.desktop && Store.isEmpty()) {
   });
 }
 
-if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
-}

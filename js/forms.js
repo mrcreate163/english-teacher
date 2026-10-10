@@ -669,6 +669,94 @@ const Forms = {
     });
   },
 
+  /* ---------------- РАСПИСАНИЕ НА ТЕЛЕФОН ---------------- */
+  phone() {
+    const o = Export.load();
+    const segs = (name, items, cur) => `<div class="seg seg-sm" role="radiogroup">${items.map(([v, label]) => `<label><input type="radio" name="${name}" value="${v}" ${String(cur) === String(v) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div>`;
+    const html = `
+    <div class="form phone-send">
+      <div class="sheet-head"><h2>${icon('smartphone', 22)} Расписание на телефон</h2><button class="icon-btn" data-close aria-label="Закрыть">${icon('x')}</button></div>
+      <div class="sheet-body">
+        <p class="muted">Выберите, что отправить на iPhone. Программа сохранит файл на компьютере, отправьте его себе в Telegram («Избранное»), на почту или любым другим способом и откройте на телефоне.</p>
+
+        <div class="opts">
+          <div class="opt"><span class="label">Уроков вперёд</span>${segs('weeksAhead', [[1, '1 нед.'], [2, '2 нед.'], [4, '4 нед.'], [8, '8 нед.']], o.weeksAhead)}</div>
+          <div class="opt"><span class="label">Прошедшие уроки с записями</span>${segs('weeksBack', [[0, 'Нет'], [2, '2 нед.'], [4, '4 нед.']], o.weeksBack)}</div>
+          <div class="opt"><span class="label">Напомнить о занятии за</span>
+            <select name="remind">${[[0, 'не напоминать'], [15, '15 минут'], [30, '30 минут'], [60, '1 час'], [180, '3 часа'], [1440, '1 день']].map(([v, n]) => `<option value="${v}" ${Number(o.remind) === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+          <label class="switch"><input type="checkbox" name="money" ${o.money ? 'checked' : ''}><span class="track"></span><span class="switch-text">Показывать оплаты и долги</span></label>
+        </div>
+
+        <div class="send-cards">
+          <section class="send-card">
+            <div class="send-ic">${icon('calendar', 24)}</div>
+            <div class="send-body"><h3>В «Календарь» iPhone</h3>
+              <p class="muted">Уроки появятся в вашем календаре с напоминаниями. В описании урока — что было в прошлый раз и какое было домашнее задание.</p></div>
+            <button class="btn btn-primary" data-send="ics">Сохранить файл</button>
+          </section>
+          <section class="send-card">
+            <div class="send-ic">${icon('note', 24)}</div>
+            <div class="send-body"><h3>PDF для чтения</h3>
+              <p class="muted">Расписание и записи по каждому ученику: тема, слова, домашнее задание.</p>
+              <div class="inline-seg">${segs('pdfFormat', [['phone', 'Для телефона'], ['a4', 'А4 для печати']], o.pdfFormat)}</div></div>
+            <button class="btn btn-primary" data-send="pdf">Сохранить PDF</button>
+          </section>
+          <section class="send-card">
+            <div class="send-ic">${icon('copy', 24)}</div>
+            <div class="send-body"><h3>Текстом в сообщение</h3>
+              <p class="muted">Короткий список уроков: вставьте в Telegram или «Заметки».</p>
+              <div class="inline-seg">${segs('textRange', [['today', 'Сегодня'], ['tomorrow', 'Завтра'], ['week', 'Неделя']], o.textRange)}</div></div>
+            <button class="btn btn-primary" data-send="text">Скопировать</button>
+          </section>
+        </div>
+
+        <details class="how">
+          <summary>Как открыть на iPhone</summary>
+          <ol>
+            <li><b>Календарь.</b> Нажмите на полученный файл с расширением .ics и выберите «Добавить все». Если кнопки нет, нажмите «Поделиться» → «Календарь». Когда вы пришлёте обновлённый файл, уроки в календаре обновятся.</li>
+            <li><b>PDF.</b> Нажмите на файл: он откроется для чтения. Чтобы читать без интернета, нажмите «Поделиться» → «Сохранить в Файлы».</li>
+            <li><b>Текст.</b> Вставьте скопированное сообщение в чат Telegram с самой собой («Избранное») или в «Заметки».</li>
+          </ol>
+        </details>
+      </div>
+    </div>`;
+    UI.modal(html, {
+      wide: true,
+      onMount(sheet) {
+        const read = () => {
+          const f = (n) => { const c = $(`[name=${n}]:checked`, sheet); return c ? c.value : null; };
+          const next = {
+            weeksAhead: Number(f('weeksAhead')), weeksBack: Number(f('weeksBack')), remind: Number($('[name=remind]', sheet).value),
+            money: $('[name=money]', sheet).checked, pdfFormat: f('pdfFormat'), textRange: f('textRange'), records: o.records,
+          };
+          Export.save(next);
+          return next;
+        };
+        sheet.addEventListener('click', async (e) => {
+          if (e.target.closest('[data-close]')) return UI.close();
+          const b = e.target.closest('[data-send]');
+          if (!b) return;
+          const opts = read();
+          const kind = b.dataset.send;
+          const stamp = D.today();
+          if (kind === 'text') { UI.copy(Export.text(opts.textRange), 'Скопировано — вставьте в Telegram или «Заметки»'); return; }
+          b.disabled = true;
+          try {
+            let where;
+            if (kind === 'ics') {
+              const { text, count } = Export.ics(opts);
+              if (!count) { UI.toast('В выбранном периоде нет уроков'); b.disabled = false; return; }
+              where = await Export.saveFile(`Уроки-${stamp}.ics`, text, 'ics');
+            } else where = await Export.savePdf(`Уроки-${stamp}.pdf`, Export.pdfHtml(opts));
+            if (where) UI.toast(window.desktop ? 'Файл сохранён. Отправьте его себе в Telegram или на почту.' : 'Готово');
+          } catch (err) { UI.toast('Не удалось сохранить файл: ' + (err.message || err)); }
+          b.disabled = false;
+        });
+        sheet.addEventListener('change', read);
+      },
+    });
+  },
+
   /* ---------------- ОТЧЁТ ЗА МЕСЯЦ ---------------- */
   report(studentId) {
     const s = Store.student(studentId);
