@@ -99,7 +99,7 @@ function exportCSV() {
   rows.forEach((l) => {
     const s = Store.student(l.studentId);
     lines.push([l.date, l.time, s ? s.name : '', LANGS[l.lang] ? LANGS[l.lang].name : '', l.duration, l.price, STATUSES[l.status].short,
-      Calc.isPayable(l) ? (l.paid ? 'да' : 'нет') : '', l.topic].map(q).join(';'));
+      Calc.isPayable(l) ? (Store.isPaid(l) ? 'да' : 'нет') : '', l.topic].map(q).join(';'));
   });
   UI.download(`uroki-${from}_${to}.csv`, '﻿' + lines.join('\r\n'), 'text/csv');
   UI.toast(`Выгружено строк: ${rows.length}. Файл открывается в Excel.`);
@@ -130,19 +130,22 @@ const Actions = {
     const id = el.dataset.id;
     Store.patchLesson(id, { status: 'done' });
     const l = Store.lesson(id);
-    if (l && l.paid) UI.toast('Урок проведён · оплата списана с баланса ученика');
-    else UI.toast('Урок отмечен как проведённый', { action: 'Уже оплачен', ms: 6500, onAction: () => Store.patchLesson(id, { paid: true, paidBy: 'cash', paidDate: D.today(), noAuto: false }) });
+    if (l && Store.isPaid(l)) {
+      const left = Store.account(l.studentId).prepaid;
+      UI.toast(`Урок проведён · списано с баланса${left ? `, осталось ${Calc.money(left)}` : ', предоплата закончилась'}`);
+    }
+    else UI.toast('Урок отмечен как проведённый', { action: 'Уже оплачен', ms: 6500, onAction: () => Store.setLessonPaid(id, true) });
   },
   'quick-cancel': (el) => {
     const id = el.dataset.id;
-    Store.patchLesson(id, { status: 'canceled', paid: false, paidBy: null });
+    Store.patchLesson(id, { status: 'canceled' });
     UI.toast('Урок отменён', { action: 'Вернуть', onAction: () => Store.patchLesson(id, { status: 'planned' }) });
   },
   'pay-student': (el) => Forms.payment(el.dataset.id),
   'pay-due': (el) => {
     const row = Calc.dueRows().find((r) => r.s.id === el.dataset.id);
     if (!row) return;
-    const c = Store.addPayment(row.s.id, row.due, { note: 'Оплата долга' });
+    const c = Store.addPayment(row.s.id, row.due, { note: 'Закрытие долга' });
     UI.toast(`${row.s.name}: оплата ${Calc.money(row.due)} принята`, { action: 'Отменить', onAction: () => Store.deletePayment(c.id), ms: 7000 });
   },
   'del-payment': (el) => {

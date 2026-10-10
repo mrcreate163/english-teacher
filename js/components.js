@@ -122,7 +122,7 @@ const Bits = {
     if (l.status === 'planned') return '<span class="pill pill-plan">В плане</span>';
     if (l.status === 'canceled') return '<span class="pill pill-cancel">Отменён</span>';
     const base = l.status === 'late' ? '<span class="pill pill-late">Поздняя отмена</span>' : '<span class="pill pill-done">Проведён</span>';
-    return base + (l.paid ? '<span class="pill pill-paid">Оплачен</span>' : '<span class="pill pill-unpaid">Не оплачен</span>');
+    return base + (Store.isPaid(l) ? '<span class="pill pill-paid">Оплачен</span>' : '<span class="pill pill-unpaid">Не оплачен</span>');
   },
   empty(iconName, title, text, action = '') {
     return `<div class="empty">${icon(iconName, 34)}<h3>${esc(title)}</h3><p>${esc(text)}</p>${action}</div>`;

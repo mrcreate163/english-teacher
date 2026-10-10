@@ -31,7 +31,7 @@ const Texts = {
     const sm = Calc.summary(ls);
     const lines = [`Занятия — ${student.name}`, fmt.cap(fmt.month(from)), ''];
     done.forEach((l) => {
-      lines.push(`${fmt.date(l.date, { day: '2-digit', month: '2-digit' })} (${fmt.date(l.date, { weekday: 'short' })}) ${l.time} · ${l.duration} мин · ${Calc.money(l.price)}${l.status === 'late' ? ' · поздняя отмена' : ''}${l.paid ? ' · оплачено' : ''}`);
+      lines.push(`${fmt.date(l.date, { day: '2-digit', month: '2-digit' })} (${fmt.date(l.date, { weekday: 'short' })}) ${l.time} · ${l.duration} мин · ${Calc.money(l.price)}${l.status === 'late' ? ' · поздняя отмена' : ''}${Store.isPaid(l) ? ' · оплачено' : ''}`);
     });
     if (!done.length) lines.push('В этом месяце занятий не было.');
     lines.push('', `Проведено: ${lessonsWord(sm.count)} (${fmt.hours(sm.minutes)})`, `Стоимость: ${Calc.money(sm.earned)}`);
@@ -69,6 +69,8 @@ const Forms = {
     if (!existing && L.date + L.time < nowStr()) L.status = 'done';
 
     const isNew = !existing;
+    const initialPaid = !!existing && Store.isPaid(existing);
+    const paidViaBalance = initialPaid && !Store.paymentFor(existing.id); // оплачен с баланса, а не отдельной оплатой
     const touched = { price: !!existing, status: !isNew };
 
     const html = `
@@ -101,9 +103,9 @@ const Forms = {
           </div>
           <label class="field"><span class="label">Стоимость, ${esc(Store.settings.currency)}</span><input type="number" name="price" min="0" step="50" value="${L.price}" inputmode="numeric"></label>
           <div class="field"><span class="label">Оплата</span>
-            <label class="switch"><input type="checkbox" name="paid" ${L.paid ? 'checked' : ''}><span class="track"></span><span class="switch-text">Оплачено</span></label>
+            <label class="switch"><input type="checkbox" name="paid" ${initialPaid ? 'checked' : ''} ${paidViaBalance ? 'disabled' : ''}><span class="track"></span><span class="switch-text">Урок оплачен</span></label>
           </div>
-          <p class="hint span2" data-pay-hint></p>
+          <p class="hint span2 pay-hint" data-pay-hint></p>
           <div class="field span2"><span class="label">Статус</span>
             <div class="seg seg-4" role="radiogroup">
               ${Object.entries(STATUSES).map(([k, v]) => `<label><input type="radio" name="status" value="${k}" ${L.status === k ? 'checked' : ''}><span>${v.short}</span></label>`).join('')}
@@ -160,11 +162,14 @@ const Forms = {
             status === 'canceled' ? 'Не учитывается в доходе и часах.' : '';
 
           const sid = val('studentId').value;
-          const bal = sid !== '__new' ? Store.balance(sid) : 0;
+          const acc = sid !== '__new' ? Store.account(sid) : { prepaid: 0, due: 0 };
           const payHint = $('[data-pay-hint]', f);
-          if (existing && existing.paid && existing.paidBy === 'credit') payHint.textContent = 'Оплачено с баланса ученика (предоплаты).';
-          else if (bal > 0 && !val('paid').checked && status !== 'canceled') payHint.textContent = `У ученика на балансе ${Calc.money(bal)} — проведённый урок спишется с него автоматически.`;
-          else payHint.textContent = '';
+          if (status === 'canceled') payHint.textContent = initialPaid && !paidViaBalance ? 'Эта оплата останется на балансе ученика — её можно будет зачесть в следующий урок.' : '';
+          else if (paidViaBalance) payHint.textContent = 'Оплачен с баланса ученика (предоплата).';
+          else if (val('paid').checked) payHint.textContent = `Оплата ${Calc.money(val('price').value)} записана за этот урок.`;
+          else if (acc.prepaid > 0) payHint.textContent = `У ученика на балансе ${Calc.money(acc.prepaid)} — урок спишется оттуда автоматически, как только вы отметите его проведённым. Галочка не нужна.`;
+          else if (acc.due > 0) payHint.textContent = `Сейчас ученик должен ${Calc.money(acc.due)}. Поставьте галочку, если за этот урок уже заплатили.`;
+          else payHint.textContent = 'Поставьте галочку, если ученик уже заплатил за этот урок.';
 
           // конфликты и выходные
           const c = $('[data-conflict]', f);
@@ -249,21 +254,15 @@ const Forms = {
           if (!date || !time) return Forms.invalid(val(!date ? 'date' : 'time'));
           if (!(duration >= 5)) return Forms.invalid(val('duration'));
           const status = f.elements.status.value;
-          const wantPaid = status !== 'canceled' && val('paid').checked;
+          const wantPaid = val('paid').checked;
           const base = {
             studentId: val('studentId').value, lang: f.elements.lang.value, date, time, duration,
             price: Math.max(0, Number(val('price').value) || 0), status,
             topic: val('topic').value.trim(), covered: val('covered').value.trim(), words: val('words').value.trim(),
             homework: val('homework').value.trim(), note: val('note').value.trim(),
           };
-          // оплата
-          const payInfo = (prev) => {
-            if (wantPaid) return prev && prev.paid ? { paid: true, paidBy: prev.paidBy || 'cash', paidDate: prev.paidDate || D.today(), noAuto: false }
-              : { paid: true, paidBy: 'cash', paidDate: D.today(), noAuto: false };
-            return { paid: false, paidBy: null, paidDate: null, noAuto: !!(prev && prev.paid && status !== 'canceled') || !!(prev && prev.noAuto) };
-          };
           if (existing) {
-            const merged = { ...existing, ...base, ...payInfo(existing) };
+            const merged = { ...existing, ...base };
             const list = [merged];
             if (f.elements.applySeries && f.elements.applySeries.checked) {
               Store.seriesFrom(existing).filter((x) => x.id !== existing.id && x.status === 'planned').forEach((x) => {
@@ -271,8 +270,10 @@ const Forms = {
               });
             }
             Store.saveLessons(list);
+            if (!paidViaBalance && status !== 'canceled' && wantPaid !== initialPaid) Store.setLessonPaid(existing.id, wantPaid);
             UI.close();
-            UI.toast('Урок сохранён');
+            UI.toast(status === 'canceled' && initialPaid && !paidViaBalance ? 'Урок отменён · оплата осталась на балансе ученика'
+              : Calc.isPayable(merged) && Store.isPaid(merged) && !wantPaid ? 'Урок сохранён · оплачен с баланса ученика' : 'Урок сохранён');
           } else {
             const repeat = f.elements.repeat && f.elements.repeat.checked;
             const extra = repeat ? clamp(Number(val('repeatCount').value) || 0, 1, 52) : 0;
@@ -281,9 +282,10 @@ const Forms = {
             for (let i = 0; i <= extra; i++) {
               const d = D.add(date, i * 7);
               const st = i === 0 ? status : (d + time < nowStr() ? status : 'planned');
-              list.push({ ...base, date: d, seriesId, status: st, ...(i === 0 ? payInfo(null) : { paid: false, paidBy: null, paidDate: null, noAuto: false }) });
+              list.push({ ...base, date: d, seriesId, status: st });
             }
             Store.saveLessons(list);
+            if (wantPaid && status !== 'canceled') Store.setLessonPaid(list[0].id, true);
             UI.close();
             UI.toast(list.length > 1 ? `Добавлено ${lessonsWord(list.length)}` : 'Урок добавлен');
           }
@@ -482,48 +484,58 @@ const Forms = {
   payment(studentId) {
     const s = Store.student(studentId);
     if (!s) return;
-    const unpaid = Calc.debts().filter((l) => l.studentId === studentId).reduce((a, l) => a + (Number(l.price) || 0), 0);
-    const bal = Math.max(0, Store.balance(studentId));
-    const due = Math.max(0, unpaid - bal);
+    const acc = Store.account(studentId);
+    const price = Number(s.price) || 0;
     const options = [];
-    if (due > 0) options.push([`Закрыть долг · ${Calc.money(due)}`, due]);
-    [4, 8].forEach((n) => options.push([`${n} ${plural(n, ['урок', 'урока', 'уроков'])} · ${Calc.money(n * s.price)}`, n * s.price]));
+    if (acc.due > 0) options.push([`Закрыть долг · ${Calc.money(acc.due)}`, acc.due]);
+    if (price > 0) [1, 4, 8].forEach((n) => options.push([`${n} ${plural(n, ['урок', 'урока', 'уроков'])} · ${Calc.money(n * price)}`, n * price]));
+    const status = acc.due > 0 ? `Долг: ${Calc.money(acc.due)}` : acc.prepaid > 0 ? `На балансе: ${Calc.money(acc.prepaid)}${price ? ` · хватит на ${lessonsWord(Math.floor(acc.prepaid / price))}` : ''}` : 'Расчёты в порядке, долга нет';
     const html = `
     <form class="form" autocomplete="off" novalidate>
       <div class="sheet-head"><h2>Принять оплату</h2><button type="button" class="icon-btn" data-close aria-label="Закрыть">${icon('x')}</button></div>
       <div class="sheet-body">
         <div class="payee">${Bits.avatar(s, 40)}<div><b>${esc(s.name)}</b>
-          <div class="muted small">${due > 0 ? `К оплате: ${Calc.money(due)}` : bal > 0 ? `Предоплата на балансе: ${Calc.money(bal)}` : 'Долгов нет'}</div></div></div>
-        <label class="field"><span class="label">Сумма, ${esc(Store.settings.currency)}</span><input type="number" name="amount" min="1" step="50" value="${due || s.price}" inputmode="numeric" autofocus></label>
+          <div class="muted small">${status}</div></div></div>
+        <label class="field"><span class="label">Сколько заплатил ученик, ${esc(Store.settings.currency)}</span><input type="number" name="amount" min="1" step="50" value="${acc.due || price || ''}" inputmode="numeric" autofocus></label>
         <div class="chips">${options.map(([t, v]) => `<button type="button" class="chip" data-amount="${v}">${t}</button>`).join('')}</div>
+        <div class="notice notice-info pay-preview" data-preview></div>
         <div class="grid2">
           <label class="field"><span class="label">Дата</span><input type="date" name="date" value="${D.today()}"></label>
-          <label class="field"><span class="label">Комментарий</span><input type="text" name="note" placeholder="Необязательно"></label>
+          <label class="field"><span class="label">Комментарий</span><input type="text" name="note" placeholder="Например: пакет на 8 уроков"></label>
         </div>
-        <p class="hint">Сумма сначала закроет неоплаченные уроки, а остаток сохранится как предоплата и спишется со следующих уроков сам.</p>
       </div>
       <div class="sheet-foot"><span class="spacer"></span>
         <button type="button" class="btn btn-ghost" data-close>Отмена</button>
-        <button type="submit" class="btn btn-primary">Принять</button></div>
+        <button type="submit" class="btn btn-primary">Принять оплату</button></div>
     </form>`;
     UI.modal(html, {
       onMount(sheet) {
         const f = $('form', sheet);
+        const preview = () => {
+          const amount = Number(f.elements.amount.value) || 0;
+          const net = acc.prepaid - acc.due + amount; // баланс после оплаты
+          let t;
+          if (!amount) t = 'Введите сумму — покажу, что изменится.';
+          else if (net < 0) t = `После оплаты ученик всё ещё будет должен ${Calc.money(-net)}.`;
+          else if (net === 0) t = acc.due > 0 ? 'Долг будет полностью закрыт.' : 'Предоплата сразу уйдёт на оплату проведённых уроков.';
+          else t = `${acc.due > 0 ? 'Долг будет закрыт. ' : ''}На балансе останется ${Calc.money(net)}${price ? ` — хватит на ${lessonsWord(Math.floor(net / price))}` : ''}. Эти деньги спишутся сами, когда вы будете отмечать уроки проведёнными.`;
+          $('[data-preview]', f).innerHTML = `${icon('sparkle', 16)}<span>${t}</span>`;
+        };
+        preview();
+        f.addEventListener('input', preview);
         f.addEventListener('click', (e) => {
           if (e.target.closest('[data-close]')) UI.close();
           const c = e.target.closest('[data-amount]');
-          if (c) f.elements.amount.value = c.dataset.amount;
+          if (c) { f.elements.amount.value = c.dataset.amount; preview(); }
         });
         f.addEventListener('submit', (e) => {
           e.preventDefault();
           const amount = Number(f.elements.amount.value);
           if (!(amount > 0)) return Forms.invalid(f.elements.amount);
-          const before = Calc.debts().filter((l) => l.studentId === studentId).length;
           const c = Store.addPayment(studentId, amount, { date: f.elements.date.value || D.today(), note: f.elements.note.value.trim() });
-          const after = Calc.debts().filter((l) => l.studentId === studentId).length;
+          const after = Store.account(studentId);
           UI.close();
-          const bal2 = Math.max(0, Store.balance(studentId));
-          UI.toast(`Оплата ${Calc.money(amount)} принята${before > after ? ` · закрыто уроков: ${before - after}` : ''}${bal2 ? ` · предоплата ${Calc.money(bal2)}` : ''}`,
+          UI.toast(`Оплата ${Calc.money(amount)} принята · ${after.due > 0 ? `долг ${Calc.money(after.due)}` : after.prepaid > 0 ? `на балансе ${Calc.money(after.prepaid)}` : 'долгов нет'}`,
             { action: 'Отменить', onAction: () => Store.deletePayment(c.id), ms: 7000 });
         });
       },

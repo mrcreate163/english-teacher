@@ -690,3 +690,9 @@ kbd { font: 600 11px/1 ui-monospace, "SF Mono", Consolas, monospace; padding: 3p
 }
 
 .welcome-foot span { display: inline-flex; gap: 6px; align-items: center; }
+
+/* оплата и баланс */
+.pay-hint { margin-top: -6px; line-height: 1.4; }
+.pay-explain { margin-bottom: 4px; }
+.pay-preview { margin: 0; }
+.pay-preview span { flex: 1; }

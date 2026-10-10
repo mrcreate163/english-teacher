@@ -169,7 +169,7 @@ const Views = {
     const rel = l.date === t ? fmt.rel(l.date, l.time) : '';
     const hw = last && last.homework;
     const prevText = last ? [last.topic, last.covered].filter(Boolean).join(' — ') : '';
-    const bal = Store.balance(s.id);
+    const bal = Store.account(s.id).prepaid;
     return `
     <section class="hero" style="--c:${s.color}">
       <div class="hero-top"><span class="hero-label">${esc(when)}</span>${rel ? `<span class="rel">${rel}</span>` : ''}</div>
@@ -312,7 +312,7 @@ const Views = {
       const blocks = items.map(({ l, s: st, e, col, n }) => {
         const stu = Store.student(l.studentId); if (!stu) return '';
         const top = (st - startH * 60) / 60, height = Math.max((e - st) / 60, 0.4);
-        const unpaid = Calc.isPayable(l) && !l.paid && l.price > 0;
+        const unpaid = Calc.isPayable(l) && !Store.isPaid(l) && l.price > 0;
         return `<div class="lb st-${l.status}" data-act="open-lesson" data-id="${l.id}" data-drag="1" tabindex="0" role="button"
           title="${esc(stu.name)} · ${l.time}–${T.end(l.time, l.duration)}${l.topic ? ' · ' + esc(l.topic) : ''}"
           style="--c:${stu.color};top:calc(${top} * var(--hh));height:calc(${height} * var(--hh) - 2px);left:calc(${col / n * 100}% + 2px);width:calc(${100 / n}% - 4px)">
@@ -371,8 +371,8 @@ const Views = {
       const ls = Store.lessonsOf(s.id);
       const sum = Calc.summary(ls);
       const next = Store.nextLesson(s.id);
-      const bal = Store.balance(s.id);
-      const due = Math.max(0, sum.unpaid - Math.max(0, bal));
+      const acc = Store.account(s.id);
+      const bal = acc.prepaid, due = acc.due;
       return `<a class="scard" href="#/students/${s.id}" style="--c:${s.color}">
         <div class="scard-top">${Bits.avatar(s, 46)}
           <div class="scard-name"><b>${esc(s.name)}</b>
@@ -395,9 +395,9 @@ const Views = {
     const ls = Store.lessonsOf(id);
     const sum = Calc.summary(ls);
     const next = Store.nextLesson(id);
-    const bal = Math.max(0, Store.balance(id));
-    const due = Math.max(0, sum.unpaid - bal);
-    const pays = Store.credits(id);
+    const acc = Store.account(id);
+    const bal = acc.prepaid, due = acc.due;
+    const pays = Store.payments(id);
     const shownPays = VS.showAllPayments ? pays : pays.slice(0, 3);
     const contact = s.contact ? (/^@\w+$/.test(s.contact) ? `<a href="https://t.me/${esc(s.contact.slice(1))}" target="_blank" rel="noopener">${icon('link', 15)} ${esc(s.contact)}</a>`
       : /^[+\d][\d\s()\-]{6,}$/.test(s.contact) ? `<a href="tel:${esc(s.contact.replace(/[^\d+]/g, ''))}">${icon('phone', 15)} ${esc(s.contact)}</a>` : `<span>${icon('phone', 15)} ${esc(s.contact)}</span>`) : '';
@@ -424,7 +424,11 @@ const Views = {
     <section class="tiles tiles-4">
       ${tile('Проведено', lessonsWord(sum.count), fmt.hours(sum.minutes))}
       ${tile('Заработано', Calc.money(sum.earned), `получено ${Calc.money(sum.received)}`)}
-      ${tile(due > 0 ? 'К оплате' : bal > 0 ? 'Предоплата' : 'Баланс', Calc.money(due > 0 ? due : bal), due > 0 ? `<button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>` : bal > 0 ? 'спишется с будущих уроков' : `<button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>`, { cls: due > 0 ? 'tile-warn' : bal > 0 ? 'tile-good' : '' })}
+      ${due > 0
+        ? tile('К оплате', Calc.money(due), `<button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>`, { cls: 'tile-warn' })
+        : bal > 0
+          ? tile('Предоплата', Calc.money(bal), `${s.price ? `хватит на ${lessonsWord(Math.floor(bal / s.price))} · ` : ''}<button class="link-btn" data-act="pay-student" data-id="${s.id}">Пополнить</button>`, { cls: 'tile-good' })
+          : tile('Баланс', Calc.money(0), `расчёты в порядке · <button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>`)}
       ${tile('Следующий урок', next ? esc(fmt.cap(fmt.date(next.date, { weekday: 'short', day: 'numeric', month: 'short' }))) : '—', next ? `${next.time}–${T.end(next.time, next.duration)}` : 'не запланирован')}
     </section>
 
@@ -448,10 +452,11 @@ const Views = {
         <section class="block">
           <div class="block-head"><h2>Оплаты</h2><button class="link-btn-plain" data-act="pay-student" data-id="${s.id}">+ Принять</button></div>
           <div class="card side-card">
-            ${pays.length ? shownPays.map((c) => `<div class="pay-row"><div><b>${Calc.money(c.amount)}</b><small>${esc(fmt.date(c.date, { day: 'numeric', month: 'long' }))}${c.note ? ' · ' + esc(c.note) : ''}</small></div>
-              <button class="icon-btn mini" data-act="del-payment" data-id="${c.id}" aria-label="Удалить оплату" title="Удалить">${icon('trash', 16)}</button></div>`).join('')
+            <p class="muted small pay-explain">Оплаты пополняют баланс ученика. Когда вы отмечаете урок проведённым, его стоимость сразу списывается с баланса.</p>
+            ${pays.length ? shownPays.map((c) => { const pl = c.lessonId ? Store.lesson(c.lessonId) : null; return `<div class="pay-row"><div><b>${Calc.money(c.amount)}</b><small>${esc(fmt.date(c.date, { day: 'numeric', month: 'long' }))}${pl ? ' · за урок ' + esc(fmt.dm(pl.date)) : c.note ? ' · ' + esc(c.note) : ''}</small></div>
+              <button class="icon-btn mini" data-act="del-payment" data-id="${c.id}" aria-label="Удалить оплату" title="Удалить оплату">${icon('trash', 16)}</button></div>`; }).join('')
               + (pays.length > 3 ? `<button class="link-btn-plain" data-act="toggle-payments">${VS.showAllPayments ? 'Свернуть' : `Показать все (${pays.length})`}</button>` : '')
-              : '<p class="muted">Оплаты вперёд (пакеты, предоплата) появятся здесь. Разовые оплаты отмечаются прямо в уроке.</p>'}
+              : '<p class="muted">Пока оплат нет.</p>'}
             <button class="btn btn-soft btn-sm full" data-act="report" data-id="${s.id}">${icon('note', 16)} Отчёт за месяц</button>
           </div>
         </section>
