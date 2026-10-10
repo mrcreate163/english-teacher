@@ -7,19 +7,42 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win nsis portable"
+    "dist": "node scripts/build-win.js"
   },
   "devDependencies": {
     "electron": "^33.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "resedit": "^2.0.3"
   },
   "build": {
     "appId": "local.moi.uroki",
     "productName": "Мои уроки",
-    "files": ["index.html", "css/**", "js/**", "icons/**", "electron/**", "manifest.webmanifest"],
-    "directories": { "output": "dist" },
-    "win": { "icon": "icons/icon-512.png", "target": ["nsis", "portable"] },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "language": "1049" },
-    "artifactName": "Moi-uroki-${version}-${target}.${ext}"
-  }
+    "copyright": "Мои уроки",
+    "files": [
+      "index.html",
+      "css/**",
+      "js/**",
+      "icons/**",
+      "electron/**",
+      "manifest.webmanifest",
+      "!**/*.md"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "icon": "icons/icon.ico",
+      "executableName": "MoiUroki",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  },
+  "author": "Мои уроки",
+  "homepage": "https://github.com/mrcreate163/english-teacher"
 }

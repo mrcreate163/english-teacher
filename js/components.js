@@ -5,11 +5,11 @@ const UI = {
   _stack: [],
 
   /* Открыть модальное окно (на телефоне — нижняя «шторка») */
-  modal(html, { onMount, onClose, wide = false, dismissable = true } = {}) {
+  modal(html, { onMount, onClose, wide = false, dismissable = true, cls = '' } = {}) {
     const root = $('#modal-root');
     const el = document.createElement('div');
     el.className = 'overlay';
-    el.innerHTML = `<div class="sheet ${wide ? 'sheet-wide' : ''}" role="dialog" aria-modal="true">${html}</div>`;
+    el.innerHTML = `<div class="sheet ${wide ? 'sheet-wide' : ''} ${cls}" role="dialog" aria-modal="true">${html}</div>`;
     root.appendChild(el);
     document.body.classList.add('modal-open');
     const entry = { el, onClose, dismissable };
@@ -78,6 +78,19 @@ const UI = {
     if (action) {
       $('.toast-btn', el).addEventListener('click', () => { clearTimeout(timer); remove(); onAction && onAction(); });
     }
+  },
+
+  copy(text, message = 'Скопировано') {
+    const done = () => UI.toast(message);
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { UI.toast('Не удалось скопировать'); }
+      ta.remove();
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback);
+    else fallback();
   },
 
   download(filename, text, type = 'application/json') {
