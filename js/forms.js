@@ -72,6 +72,8 @@ const Forms = {
     const initialPaid = !!existing && Store.isPaid(existing);
     const paidViaBalance = initialPaid && !Store.paymentFor(existing.id); // оплачен с баланса, а не отдельной оплатой
     const touched = { price: !!existing, status: !isNew };
+    const hasRecord = !!(L.topic || L.covered || L.words || L.homework || L.note);
+    const openRecord = !isPhone() || hasRecord || L.status === 'done'; // на телефоне запись урока свёрнута, пока не нужна
 
     const html = `
     <form class="form lesson-form" autocomplete="off" novalidate>
@@ -126,7 +128,8 @@ const Forms = {
         </div>` : (L.seriesId ? `
         <label class="check"><input type="checkbox" name="applySeries"><span>Применить время, длительность и стоимость ко всем следующим урокам серии</span></label>` : '')}
 
-        <div class="section-title">${icon('book', 18)} Запись урока</div>
+        <details class="rec-details" ${openRecord ? 'open' : ''}>
+        <summary class="section-title">${icon('book', 18)} Запись урока <span class="muted rec-hint">${openRecord ? '' : '— тема, слова, домашнее задание'}</span></summary>
         <div data-prev class="prev-lesson" hidden></div>
         <div class="grid1">
           <label class="field"><span class="label">Тема</span><input type="text" name="topic" value="${esc(L.topic)}" placeholder="Например: Present Perfect / 在餐厅"></label>
@@ -135,6 +138,7 @@ const Forms = {
           <label class="field"><span class="label">Домашнее задание</span><textarea name="homework" rows="2" placeholder="Что задано к следующему уроку">${esc(L.homework)}</textarea></label>
           <label class="field"><span class="label">Личная заметка</span><textarea name="note" rows="2" placeholder="Видите только вы: успехи, трудности, план на будущее">${esc(L.note)}</textarea></label>
         </div>
+        </details>
       </div>
       <div class="sheet-foot">
         ${isNew ? '' : `<button type="button" class="btn btn-ghost-danger" data-delete>${icon('trash', 18)}<span>Удалить</span></button>`}
@@ -289,6 +293,74 @@ const Forms = {
             UI.close();
             UI.toast(list.length > 1 ? `Добавлено ${lessonsWord(list.length)}` : 'Урок добавлен');
           }
+        });
+      },
+    });
+  },
+
+  /* Быстрые действия с уроком (на телефоне открывается по нажатию на урок) */
+  quick(id) {
+    const l = Store.lesson(id);
+    const s = l && Store.student(l.studentId);
+    if (!l || !s) return;
+    const payable = Calc.isPayable(l);
+    const paid = Store.isPaid(l);
+    const btn = (act, ic, label, cls = 'btn-soft') => `<button class="btn ${cls} q-btn" data-q="${act}">${icon(ic, 22)}<span>${label}</span></button>`;
+    let actions;
+    if (l.status === 'planned') actions = btn('done', 'check', 'Проведён', 'btn-good') + btn('cancel', 'x', 'Отменён') + btn('move', 'swap', 'Перенести') + btn('edit', 'edit', 'Подробнее');
+    else if (payable) actions = (!paid ? btn('paid', 'wallet', 'Оплата получена', 'btn-good') : '') + btn('edit', 'edit', 'Записать итоги') + btn('plan', 'undo', 'Вернуть в план');
+    else actions = btn('plan', 'undo', 'Вернуть в план') + btn('edit', 'edit', 'Подробнее');
+    const rec = [['Тема', l.topic], ['Домашнее задание', l.homework], ['Заметка', l.note]].filter(([, v]) => v);
+    const html = `
+    <div class="form quick" style="--c:${s.color}">
+      <div class="sheet-head">
+        <div class="q-who">${Bits.avatar(s, 44)}<div><b>${esc(s.name)} ${Bits.langBadge(l.lang)}</b>
+          <span class="muted">${esc(fmt.cap(fmt.date(l.date, { weekday: 'short', day: 'numeric', month: 'long' })))} · ${l.time}–${T.end(l.time, l.duration)}</span></div></div>
+        <button class="icon-btn" data-q="close" aria-label="Закрыть">${icon('x')}</button>
+      </div>
+      <div class="sheet-body">
+        <div class="q-meta">${Bits.statusPill(l)}<span class="q-price">${Calc.money(l.price)}</span></div>
+        ${rec.map(([k, v]) => `<div class="rec-row ${k === 'Домашнее задание' ? 'hw' : ''}"><small>${k}</small><p>${esc(v).replace(/\n/g, '<br>')}</p></div>`).join('')}
+        <div class="q-grid">${actions}</div>
+        <div class="q-move" data-q-move hidden>
+          <div class="grid2">
+            <label class="field"><span class="label">Дата</span><input type="date" name="date" value="${l.date}"></label>
+            <label class="field"><span class="label">Время</span><input type="time" name="time" value="${l.time}" step="300"></label>
+          </div>
+          <button class="btn btn-primary full" data-q="move-save">Перенести урок</button>
+        </div>
+        <div class="q-links">
+          ${l.status === 'planned' ? `<button class="link-btn-plain" data-q="remind">${icon('copy', 15)} Напомнить ученику</button>` : ''}
+          <button class="link-btn-plain" data-q="student">Карточка ученика</button>
+        </div>
+      </div>
+    </div>`;
+    UI.modal(html, {
+      onMount(sheet) {
+        sheet.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-q]');
+          if (!b) return;
+          const act = b.dataset.q;
+          if (act === 'close') return UI.close();
+          if (act === 'move') { $('[data-q-move]', sheet).hidden = false; $('.q-grid', sheet).hidden = true; return; }
+          if (act === 'move-save') {
+            const date = $('input[name=date]', sheet).value, time = $('input[name=time]', sheet).value;
+            if (!date || !time) return;
+            const old = { date: l.date, time: l.time };
+            Store.patchLesson(id, { date, time });
+            UI.close();
+            UI.toast(`Перенесён на ${fmt.date(date, { weekday: 'short', day: 'numeric', month: 'short' })}, ${time}`, { action: 'Вернуть', onAction: () => Store.patchLesson(id, old), ms: 6500 });
+            if (Store.conflicts(date, time, l.duration, id).length) setTimeout(() => UI.toast('Внимание: это время пересекается с другим уроком'), 400);
+            return;
+          }
+          if (act === 'remind') return UI.copy(Texts.reminder(l), 'Напоминание скопировано — вставьте в чат с учеником');
+          if (act === 'student') { UI.close(); location.hash = `#/students/${s.id}`; return; }
+          UI.close();
+          if (act === 'done') Actions['quick-done']({ dataset: { id } });
+          else if (act === 'cancel') Actions['quick-cancel']({ dataset: { id } });
+          else if (act === 'paid') { Store.setLessonPaid(id, true); UI.toast('Оплата записана'); }
+          else if (act === 'plan') Store.patchLesson(id, { status: 'planned' });
+          else if (act === 'edit') setTimeout(() => Forms.lesson({ id }), 200);
         });
       },
     });

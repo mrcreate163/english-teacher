@@ -125,7 +125,8 @@ const Store = (() => {
           if (data.offs.some((o) => d >= o.from && d <= o.to)) continue;
           if (d === today && key <= nowKey()) continue; // уроки, которые уже должны были пройти, не создаём
           data.lessons.push({
-            id: uid(), studentId: s.id, lang: r.lang || (s.lang === 'zh' ? 'zh' : 'en'), date: d, time: r.time,
+            id: `reg-${s.id}-${d}-${r.time.replace(':', '')}`, // одинаковый номер на всех устройствах, чтобы синхронизация не создавала дубли
+            studentId: s.id, lang: r.lang || (s.lang === 'zh' ? 'zh' : 'en'), date: d, time: r.time,
             duration: Number(r.duration) || Number(s.duration) || 60, price: Number(s.price) || 0, status: 'planned', paid: false,
             topic: '', covered: '', words: '', homework: '', note: '', seriesId: `reg-${s.id}-${r.wd}-${r.time}`, slot: key, auto: true,
           });
@@ -357,6 +358,29 @@ const Store = (() => {
     markBackup() { data.meta.lastBackup = Date.now(); commit(); },
     noteBackup() { data.meta.lastBackup = Date.now(); persist(); },
     ensureRegular() { const n = generateRegular(); if (n) commit(); return n; },
+
+    /* Применить изменения, пришедшие с другого устройства (см. js/sync.js) */
+    applyRemote(ops) {
+      for (const op of ops) {
+        if (op.type === 'settings') {
+          if (op.rec) { const theme = data.settings.theme; Object.assign(data.settings, op.rec, { theme }); }
+          continue;
+        }
+        const list = { student: data.students, lesson: data.lessons, credit: data.credits, off: data.offs }[op.type];
+        if (!list) continue;
+        const i = list.findIndex((x) => x.id === op.id);
+        if (!op.rec) { if (i >= 0) list.splice(i, 1); }
+        else if (i >= 0) list[i] = op.rec; else list.push(op.rec);
+      }
+      data.meta.demo = false;
+      commit();
+    },
+    /* Убрать ученики/уроки/оплаты с этого устройства (настройки остаются) */
+    wipeData() {
+      data.students = []; data.lessons = []; data.credits = []; data.offs = [];
+      data.meta.demo = false;
+      commit();
+    },
 
     exportJSON() {
       return JSON.stringify({ app: 'tutor-planner', version: 2, exported: new Date().toISOString(), ...data }, null, 2);
