@@ -2,7 +2,18 @@ name: Сборка установщика для Windows
 on:
   workflow_dispatch:
   push:
-    tags: ['v*']
+    branches: ['**']
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'index.html'
+      - 'js/**'
+      - 'css/**'
+      - 'icons/**'
+      - 'electron/**'
+      - 'installer/**'
+      - 'scripts/**'
+      - '.github/workflows/build-windows.yml'
 permissions:
   contents: write
 jobs:
@@ -16,12 +27,23 @@ jobs:
         run: choco install nsis -y --no-progress
       - run: npm ci
       - run: npm run dist
+      - name: Версия
+        id: ver
+        shell: bash
+        run: echo "v=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
         with:
           name: Moi-uroki-Ustanovshchik
           path: dist/Moi-uroki-Ustanovshchik-*.exe
-      - name: Приложить установщик к релизу
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Опубликовать релиз с установщиком
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.ver.outputs.v }}
+          target_commitish: ${{ github.sha }}
+          name: Мои уроки ${{ steps.ver.outputs.v }}
+          body: |
+            Установщик для Windows 10/11 (64-бит): скачайте файл `Moi-uroki-Ustanovshchik-*.exe` ниже и запустите. Если Windows покажет предупреждение, нажмите «Подробнее → Выполнить в любом случае»: установщик пока не подписан сертификатом.
+            Памятка по работе с программой: https://github.com/mrcreate163/english-teacher/blob/main/docs/GUIDE.md
           files: dist/Moi-uroki-Ustanovshchik-*.exe
+          make_latest: true
+

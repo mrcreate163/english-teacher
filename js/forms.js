@@ -31,7 +31,7 @@ const Texts = {
     const sm = Calc.summary(ls);
     const lines = [`Занятия — ${student.name}`, fmt.cap(fmt.month(from)), ''];
     done.forEach((l) => {
-      lines.push(`${fmt.date(l.date, { day: '2-digit', month: '2-digit' })} (${fmt.date(l.date, { weekday: 'short' })}) ${l.time} · ${l.duration} мин · ${Calc.money(l.price)}${l.status === 'late' ? ' · поздняя отмена' : ''}${l.paid ? ' · оплачено' : ''}`);
+      lines.push(`${fmt.date(l.date, { day: '2-digit', month: '2-digit' })} (${fmt.date(l.date, { weekday: 'short' })}) ${l.time} · ${l.duration} мин · ${Calc.money(l.price)}${l.status === 'late' ? ' · поздняя отмена' : ''}${Store.isPaid(l) ? ' · оплачено' : ''}`);
     });
     if (!done.length) lines.push('В этом месяце занятий не было.');
     lines.push('', `Проведено: ${lessonsWord(sm.count)} (${fmt.hours(sm.minutes)})`, `Стоимость: ${Calc.money(sm.earned)}`);
@@ -69,7 +69,11 @@ const Forms = {
     if (!existing && L.date + L.time < nowStr()) L.status = 'done';
 
     const isNew = !existing;
+    const initialPaid = !!existing && Store.isPaid(existing);
+    const paidViaBalance = initialPaid && !Store.paymentFor(existing.id); // оплачен с баланса, а не отдельной оплатой
     const touched = { price: !!existing, status: !isNew };
+    const hasRecord = !!(L.topic || L.covered || L.words || L.homework || L.note);
+    const openRecord = !isPhone() || hasRecord || L.status === 'done'; // на телефоне запись урока свёрнута, пока не нужна
 
     const html = `
     <form class="form lesson-form" autocomplete="off" novalidate>
@@ -101,9 +105,9 @@ const Forms = {
           </div>
           <label class="field"><span class="label">Стоимость, ${esc(Store.settings.currency)}</span><input type="number" name="price" min="0" step="50" value="${L.price}" inputmode="numeric"></label>
           <div class="field"><span class="label">Оплата</span>
-            <label class="switch"><input type="checkbox" name="paid" ${L.paid ? 'checked' : ''}><span class="track"></span><span class="switch-text">Оплачено</span></label>
+            <label class="switch"><input type="checkbox" name="paid" ${initialPaid ? 'checked' : ''} ${paidViaBalance ? 'disabled' : ''}><span class="track"></span><span class="switch-text">Урок оплачен</span></label>
           </div>
-          <p class="hint span2" data-pay-hint></p>
+          <p class="hint span2 pay-hint" data-pay-hint></p>
           <div class="field span2"><span class="label">Статус</span>
             <div class="seg seg-4" role="radiogroup">
               ${Object.entries(STATUSES).map(([k, v]) => `<label><input type="radio" name="status" value="${k}" ${L.status === k ? 'checked' : ''}><span>${v.short}</span></label>`).join('')}
@@ -124,7 +128,8 @@ const Forms = {
         </div>` : (L.seriesId ? `
         <label class="check"><input type="checkbox" name="applySeries"><span>Применить время, длительность и стоимость ко всем следующим урокам серии</span></label>` : '')}
 
-        <div class="section-title">${icon('book', 18)} Запись урока</div>
+        <details class="rec-details" ${openRecord ? 'open' : ''}>
+        <summary class="section-title">${icon('book', 18)} Запись урока <span class="muted rec-hint">${openRecord ? '' : '— тема, слова, домашнее задание'}</span></summary>
         <div data-prev class="prev-lesson" hidden></div>
         <div class="grid1">
           <label class="field"><span class="label">Тема</span><input type="text" name="topic" value="${esc(L.topic)}" placeholder="Например: Present Perfect / 在餐厅"></label>
@@ -133,6 +138,7 @@ const Forms = {
           <label class="field"><span class="label">Домашнее задание</span><textarea name="homework" rows="2" placeholder="Что задано к следующему уроку">${esc(L.homework)}</textarea></label>
           <label class="field"><span class="label">Личная заметка</span><textarea name="note" rows="2" placeholder="Видите только вы: успехи, трудности, план на будущее">${esc(L.note)}</textarea></label>
         </div>
+        </details>
       </div>
       <div class="sheet-foot">
         ${isNew ? '' : `<button type="button" class="btn btn-ghost-danger" data-delete>${icon('trash', 18)}<span>Удалить</span></button>`}
@@ -160,11 +166,14 @@ const Forms = {
             status === 'canceled' ? 'Не учитывается в доходе и часах.' : '';
 
           const sid = val('studentId').value;
-          const bal = sid !== '__new' ? Store.balance(sid) : 0;
+          const acc = sid !== '__new' ? Store.account(sid) : { prepaid: 0, due: 0 };
           const payHint = $('[data-pay-hint]', f);
-          if (existing && existing.paid && existing.paidBy === 'credit') payHint.textContent = 'Оплачено с баланса ученика (предоплаты).';
-          else if (bal > 0 && !val('paid').checked && status !== 'canceled') payHint.textContent = `У ученика на балансе ${Calc.money(bal)} — проведённый урок спишется с него автоматически.`;
-          else payHint.textContent = '';
+          if (status === 'canceled') payHint.textContent = initialPaid && !paidViaBalance ? 'Эта оплата останется на балансе ученика — её можно будет зачесть в следующий урок.' : '';
+          else if (paidViaBalance) payHint.textContent = 'Оплачен с баланса ученика (предоплата).';
+          else if (val('paid').checked) payHint.textContent = `Оплата ${Calc.money(val('price').value)} записана за этот урок.`;
+          else if (acc.prepaid > 0) payHint.textContent = `У ученика на балансе ${Calc.money(acc.prepaid)} — урок спишется оттуда автоматически, как только вы отметите его проведённым. Галочка не нужна.`;
+          else if (acc.due > 0) payHint.textContent = `Сейчас ученик должен ${Calc.money(acc.due)}. Поставьте галочку, если за этот урок уже заплатили.`;
+          else payHint.textContent = 'Поставьте галочку, если ученик уже заплатил за этот урок.';
 
           // конфликты и выходные
           const c = $('[data-conflict]', f);
@@ -249,21 +258,15 @@ const Forms = {
           if (!date || !time) return Forms.invalid(val(!date ? 'date' : 'time'));
           if (!(duration >= 5)) return Forms.invalid(val('duration'));
           const status = f.elements.status.value;
-          const wantPaid = status !== 'canceled' && val('paid').checked;
+          const wantPaid = val('paid').checked;
           const base = {
             studentId: val('studentId').value, lang: f.elements.lang.value, date, time, duration,
             price: Math.max(0, Number(val('price').value) || 0), status,
             topic: val('topic').value.trim(), covered: val('covered').value.trim(), words: val('words').value.trim(),
             homework: val('homework').value.trim(), note: val('note').value.trim(),
           };
-          // оплата
-          const payInfo = (prev) => {
-            if (wantPaid) return prev && prev.paid ? { paid: true, paidBy: prev.paidBy || 'cash', paidDate: prev.paidDate || D.today(), noAuto: false }
-              : { paid: true, paidBy: 'cash', paidDate: D.today(), noAuto: false };
-            return { paid: false, paidBy: null, paidDate: null, noAuto: !!(prev && prev.paid && status !== 'canceled') || !!(prev && prev.noAuto) };
-          };
           if (existing) {
-            const merged = { ...existing, ...base, ...payInfo(existing) };
+            const merged = { ...existing, ...base };
             const list = [merged];
             if (f.elements.applySeries && f.elements.applySeries.checked) {
               Store.seriesFrom(existing).filter((x) => x.id !== existing.id && x.status === 'planned').forEach((x) => {
@@ -271,8 +274,10 @@ const Forms = {
               });
             }
             Store.saveLessons(list);
+            if (!paidViaBalance && status !== 'canceled' && wantPaid !== initialPaid) Store.setLessonPaid(existing.id, wantPaid);
             UI.close();
-            UI.toast('Урок сохранён');
+            UI.toast(status === 'canceled' && initialPaid && !paidViaBalance ? 'Урок отменён · оплата осталась на балансе ученика'
+              : Calc.isPayable(merged) && Store.isPaid(merged) && !wantPaid ? 'Урок сохранён · оплачен с баланса ученика' : 'Урок сохранён');
           } else {
             const repeat = f.elements.repeat && f.elements.repeat.checked;
             const extra = repeat ? clamp(Number(val('repeatCount').value) || 0, 1, 52) : 0;
@@ -281,12 +286,81 @@ const Forms = {
             for (let i = 0; i <= extra; i++) {
               const d = D.add(date, i * 7);
               const st = i === 0 ? status : (d + time < nowStr() ? status : 'planned');
-              list.push({ ...base, date: d, seriesId, status: st, ...(i === 0 ? payInfo(null) : { paid: false, paidBy: null, paidDate: null, noAuto: false }) });
+              list.push({ ...base, date: d, seriesId, status: st });
             }
             Store.saveLessons(list);
+            if (wantPaid && status !== 'canceled') Store.setLessonPaid(list[0].id, true);
             UI.close();
             UI.toast(list.length > 1 ? `Добавлено ${lessonsWord(list.length)}` : 'Урок добавлен');
           }
+        });
+      },
+    });
+  },
+
+  /* Быстрые действия с уроком (на телефоне открывается по нажатию на урок) */
+  quick(id) {
+    const l = Store.lesson(id);
+    const s = l && Store.student(l.studentId);
+    if (!l || !s) return;
+    const payable = Calc.isPayable(l);
+    const paid = Store.isPaid(l);
+    const btn = (act, ic, label, cls = 'btn-soft') => `<button class="btn ${cls} q-btn" data-q="${act}">${icon(ic, 22)}<span>${label}</span></button>`;
+    let actions;
+    if (l.status === 'planned') actions = btn('done', 'check', 'Проведён', 'btn-good') + btn('cancel', 'x', 'Отменён') + btn('move', 'swap', 'Перенести') + btn('edit', 'edit', 'Подробнее');
+    else if (payable) actions = (!paid ? btn('paid', 'wallet', 'Оплата получена', 'btn-good') : '') + btn('edit', 'edit', 'Записать итоги') + btn('plan', 'undo', 'Вернуть в план');
+    else actions = btn('plan', 'undo', 'Вернуть в план') + btn('edit', 'edit', 'Подробнее');
+    const rec = [['Тема', l.topic], ['Домашнее задание', l.homework], ['Заметка', l.note]].filter(([, v]) => v);
+    const html = `
+    <div class="form quick" style="--c:${s.color}">
+      <div class="sheet-head">
+        <div class="q-who">${Bits.avatar(s, 44)}<div><b>${esc(s.name)} ${Bits.langBadge(l.lang)}</b>
+          <span class="muted">${esc(fmt.cap(fmt.date(l.date, { weekday: 'short', day: 'numeric', month: 'long' })))} · ${l.time}–${T.end(l.time, l.duration)}</span></div></div>
+        <button class="icon-btn" data-q="close" aria-label="Закрыть">${icon('x')}</button>
+      </div>
+      <div class="sheet-body">
+        <div class="q-meta">${Bits.statusPill(l)}<span class="q-price">${Calc.money(l.price)}</span></div>
+        ${rec.map(([k, v]) => `<div class="rec-row ${k === 'Домашнее задание' ? 'hw' : ''}"><small>${k}</small><p>${esc(v).replace(/\n/g, '<br>')}</p></div>`).join('')}
+        <div class="q-grid">${actions}</div>
+        <div class="q-move" data-q-move hidden>
+          <div class="grid2">
+            <label class="field"><span class="label">Дата</span><input type="date" name="date" value="${l.date}"></label>
+            <label class="field"><span class="label">Время</span><input type="time" name="time" value="${l.time}" step="300"></label>
+          </div>
+          <button class="btn btn-primary full" data-q="move-save">Перенести урок</button>
+        </div>
+        <div class="q-links">
+          ${l.status === 'planned' ? `<button class="link-btn-plain" data-q="remind">${icon('copy', 15)} Напомнить ученику</button>` : ''}
+          <button class="link-btn-plain" data-q="student">Карточка ученика</button>
+        </div>
+      </div>
+    </div>`;
+    UI.modal(html, {
+      onMount(sheet) {
+        sheet.addEventListener('click', (e) => {
+          const b = e.target.closest('[data-q]');
+          if (!b) return;
+          const act = b.dataset.q;
+          if (act === 'close') return UI.close();
+          if (act === 'move') { $('[data-q-move]', sheet).hidden = false; $('.q-grid', sheet).hidden = true; return; }
+          if (act === 'move-save') {
+            const date = $('input[name=date]', sheet).value, time = $('input[name=time]', sheet).value;
+            if (!date || !time) return;
+            const old = { date: l.date, time: l.time };
+            Store.patchLesson(id, { date, time });
+            UI.close();
+            UI.toast(`Перенесён на ${fmt.date(date, { weekday: 'short', day: 'numeric', month: 'short' })}, ${time}`, { action: 'Вернуть', onAction: () => Store.patchLesson(id, old), ms: 6500 });
+            if (Store.conflicts(date, time, l.duration, id).length) setTimeout(() => UI.toast('Внимание: это время пересекается с другим уроком'), 400);
+            return;
+          }
+          if (act === 'remind') return UI.copy(Texts.reminder(l), 'Напоминание скопировано — вставьте в чат с учеником');
+          if (act === 'student') { UI.close(); location.hash = `#/students/${s.id}`; return; }
+          UI.close();
+          if (act === 'done') Actions['quick-done']({ dataset: { id } });
+          else if (act === 'cancel') Actions['quick-cancel']({ dataset: { id } });
+          else if (act === 'paid') { Store.setLessonPaid(id, true); UI.toast('Оплата записана'); }
+          else if (act === 'plan') Store.patchLesson(id, { status: 'planned' });
+          else if (act === 'edit') setTimeout(() => Forms.lesson({ id }), 200);
         });
       },
     });
@@ -482,48 +556,58 @@ const Forms = {
   payment(studentId) {
     const s = Store.student(studentId);
     if (!s) return;
-    const unpaid = Calc.debts().filter((l) => l.studentId === studentId).reduce((a, l) => a + (Number(l.price) || 0), 0);
-    const bal = Math.max(0, Store.balance(studentId));
-    const due = Math.max(0, unpaid - bal);
+    const acc = Store.account(studentId);
+    const price = Number(s.price) || 0;
     const options = [];
-    if (due > 0) options.push([`Закрыть долг · ${Calc.money(due)}`, due]);
-    [4, 8].forEach((n) => options.push([`${n} ${plural(n, ['урок', 'урока', 'уроков'])} · ${Calc.money(n * s.price)}`, n * s.price]));
+    if (acc.due > 0) options.push([`Закрыть долг · ${Calc.money(acc.due)}`, acc.due]);
+    if (price > 0) [1, 4, 8].forEach((n) => options.push([`${n} ${plural(n, ['урок', 'урока', 'уроков'])} · ${Calc.money(n * price)}`, n * price]));
+    const status = acc.due > 0 ? `Долг: ${Calc.money(acc.due)}` : acc.prepaid > 0 ? `На балансе: ${Calc.money(acc.prepaid)}${price ? ` · хватит на ${lessonsWord(Math.floor(acc.prepaid / price))}` : ''}` : 'Расчёты в порядке, долга нет';
     const html = `
     <form class="form" autocomplete="off" novalidate>
       <div class="sheet-head"><h2>Принять оплату</h2><button type="button" class="icon-btn" data-close aria-label="Закрыть">${icon('x')}</button></div>
       <div class="sheet-body">
         <div class="payee">${Bits.avatar(s, 40)}<div><b>${esc(s.name)}</b>
-          <div class="muted small">${due > 0 ? `К оплате: ${Calc.money(due)}` : bal > 0 ? `Предоплата на балансе: ${Calc.money(bal)}` : 'Долгов нет'}</div></div></div>
-        <label class="field"><span class="label">Сумма, ${esc(Store.settings.currency)}</span><input type="number" name="amount" min="1" step="50" value="${due || s.price}" inputmode="numeric" autofocus></label>
+          <div class="muted small">${status}</div></div></div>
+        <label class="field"><span class="label">Сколько заплатил ученик, ${esc(Store.settings.currency)}</span><input type="number" name="amount" min="1" step="50" value="${acc.due || price || ''}" inputmode="numeric" autofocus></label>
         <div class="chips">${options.map(([t, v]) => `<button type="button" class="chip" data-amount="${v}">${t}</button>`).join('')}</div>
+        <div class="notice notice-info pay-preview" data-preview></div>
         <div class="grid2">
           <label class="field"><span class="label">Дата</span><input type="date" name="date" value="${D.today()}"></label>
-          <label class="field"><span class="label">Комментарий</span><input type="text" name="note" placeholder="Необязательно"></label>
+          <label class="field"><span class="label">Комментарий</span><input type="text" name="note" placeholder="Например: пакет на 8 уроков"></label>
         </div>
-        <p class="hint">Сумма сначала закроет неоплаченные уроки, а остаток сохранится как предоплата и спишется со следующих уроков сам.</p>
       </div>
       <div class="sheet-foot"><span class="spacer"></span>
         <button type="button" class="btn btn-ghost" data-close>Отмена</button>
-        <button type="submit" class="btn btn-primary">Принять</button></div>
+        <button type="submit" class="btn btn-primary">Принять оплату</button></div>
     </form>`;
     UI.modal(html, {
       onMount(sheet) {
         const f = $('form', sheet);
+        const preview = () => {
+          const amount = Number(f.elements.amount.value) || 0;
+          const net = acc.prepaid - acc.due + amount; // баланс после оплаты
+          let t;
+          if (!amount) t = 'Введите сумму — покажу, что изменится.';
+          else if (net < 0) t = `После оплаты ученик всё ещё будет должен ${Calc.money(-net)}.`;
+          else if (net === 0) t = acc.due > 0 ? 'Долг будет полностью закрыт.' : 'Предоплата сразу уйдёт на оплату проведённых уроков.';
+          else t = `${acc.due > 0 ? 'Долг будет закрыт. ' : ''}На балансе останется ${Calc.money(net)}${price ? ` — хватит на ${lessonsWord(Math.floor(net / price))}` : ''}. Эти деньги спишутся сами, когда вы будете отмечать уроки проведёнными.`;
+          $('[data-preview]', f).innerHTML = `${icon('sparkle', 16)}<span>${t}</span>`;
+        };
+        preview();
+        f.addEventListener('input', preview);
         f.addEventListener('click', (e) => {
           if (e.target.closest('[data-close]')) UI.close();
           const c = e.target.closest('[data-amount]');
-          if (c) f.elements.amount.value = c.dataset.amount;
+          if (c) { f.elements.amount.value = c.dataset.amount; preview(); }
         });
         f.addEventListener('submit', (e) => {
           e.preventDefault();
           const amount = Number(f.elements.amount.value);
           if (!(amount > 0)) return Forms.invalid(f.elements.amount);
-          const before = Calc.debts().filter((l) => l.studentId === studentId).length;
           const c = Store.addPayment(studentId, amount, { date: f.elements.date.value || D.today(), note: f.elements.note.value.trim() });
-          const after = Calc.debts().filter((l) => l.studentId === studentId).length;
+          const after = Store.account(studentId);
           UI.close();
-          const bal2 = Math.max(0, Store.balance(studentId));
-          UI.toast(`Оплата ${Calc.money(amount)} принята${before > after ? ` · закрыто уроков: ${before - after}` : ''}${bal2 ? ` · предоплата ${Calc.money(bal2)}` : ''}`,
+          UI.toast(`Оплата ${Calc.money(amount)} принята · ${after.due > 0 ? `долг ${Calc.money(after.due)}` : after.prepaid > 0 ? `на балансе ${Calc.money(after.prepaid)}` : 'долгов нет'}`,
             { action: 'Отменить', onAction: () => Store.deletePayment(c.id), ms: 7000 });
         });
       },
@@ -581,6 +665,94 @@ const Forms = {
           UI.toast(res && res.count ? `Выходные добавлены · отменено уроков: ${res.count}` : 'Выходные добавлены',
             res && res.count ? { action: 'Вернуть уроки', onAction: res.undo, ms: 7000 } : {});
         });
+      },
+    });
+  },
+
+  /* ---------------- РАСПИСАНИЕ НА ТЕЛЕФОН ---------------- */
+  phone() {
+    const o = Export.load();
+    const segs = (name, items, cur) => `<div class="seg seg-sm" role="radiogroup">${items.map(([v, label]) => `<label><input type="radio" name="${name}" value="${v}" ${String(cur) === String(v) ? 'checked' : ''}><span>${label}</span></label>`).join('')}</div>`;
+    const html = `
+    <div class="form phone-send">
+      <div class="sheet-head"><h2>${icon('smartphone', 22)} Расписание на телефон</h2><button class="icon-btn" data-close aria-label="Закрыть">${icon('x')}</button></div>
+      <div class="sheet-body">
+        <p class="muted">Выберите, что отправить на iPhone. Программа сохранит файл на компьютере, отправьте его себе в Telegram («Избранное»), на почту или любым другим способом и откройте на телефоне.</p>
+
+        <div class="opts">
+          <div class="opt"><span class="label">Уроков вперёд</span>${segs('weeksAhead', [[1, '1 нед.'], [2, '2 нед.'], [4, '4 нед.'], [8, '8 нед.']], o.weeksAhead)}</div>
+          <div class="opt"><span class="label">Прошедшие уроки с записями</span>${segs('weeksBack', [[0, 'Нет'], [2, '2 нед.'], [4, '4 нед.']], o.weeksBack)}</div>
+          <div class="opt"><span class="label">Напомнить о занятии за</span>
+            <select name="remind">${[[0, 'не напоминать'], [15, '15 минут'], [30, '30 минут'], [60, '1 час'], [180, '3 часа'], [1440, '1 день']].map(([v, n]) => `<option value="${v}" ${Number(o.remind) === v ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+          <label class="switch"><input type="checkbox" name="money" ${o.money ? 'checked' : ''}><span class="track"></span><span class="switch-text">Показывать оплаты и долги</span></label>
+        </div>
+
+        <div class="send-cards">
+          <section class="send-card">
+            <div class="send-ic">${icon('calendar', 24)}</div>
+            <div class="send-body"><h3>В «Календарь» iPhone</h3>
+              <p class="muted">Уроки появятся в вашем календаре с напоминаниями. В описании урока — что было в прошлый раз и какое было домашнее задание.</p></div>
+            <button class="btn btn-primary" data-send="ics">Сохранить файл</button>
+          </section>
+          <section class="send-card">
+            <div class="send-ic">${icon('note', 24)}</div>
+            <div class="send-body"><h3>PDF для чтения</h3>
+              <p class="muted">Расписание и записи по каждому ученику: тема, слова, домашнее задание.</p>
+              <div class="inline-seg">${segs('pdfFormat', [['phone', 'Для телефона'], ['a4', 'А4 для печати']], o.pdfFormat)}</div></div>
+            <button class="btn btn-primary" data-send="pdf">Сохранить PDF</button>
+          </section>
+          <section class="send-card">
+            <div class="send-ic">${icon('copy', 24)}</div>
+            <div class="send-body"><h3>Текстом в сообщение</h3>
+              <p class="muted">Короткий список уроков: вставьте в Telegram или «Заметки».</p>
+              <div class="inline-seg">${segs('textRange', [['today', 'Сегодня'], ['tomorrow', 'Завтра'], ['week', 'Неделя']], o.textRange)}</div></div>
+            <button class="btn btn-primary" data-send="text">Скопировать</button>
+          </section>
+        </div>
+
+        <details class="how">
+          <summary>Как открыть на iPhone</summary>
+          <ol>
+            <li><b>Календарь.</b> Нажмите на полученный файл с расширением .ics и выберите «Добавить все». Если кнопки нет, нажмите «Поделиться» → «Календарь». Когда вы пришлёте обновлённый файл, уроки в календаре обновятся.</li>
+            <li><b>PDF.</b> Нажмите на файл: он откроется для чтения. Чтобы читать без интернета, нажмите «Поделиться» → «Сохранить в Файлы».</li>
+            <li><b>Текст.</b> Вставьте скопированное сообщение в чат Telegram с самой собой («Избранное») или в «Заметки».</li>
+          </ol>
+        </details>
+      </div>
+    </div>`;
+    UI.modal(html, {
+      wide: true,
+      onMount(sheet) {
+        const read = () => {
+          const f = (n) => { const c = $(`[name=${n}]:checked`, sheet); return c ? c.value : null; };
+          const next = {
+            weeksAhead: Number(f('weeksAhead')), weeksBack: Number(f('weeksBack')), remind: Number($('[name=remind]', sheet).value),
+            money: $('[name=money]', sheet).checked, pdfFormat: f('pdfFormat'), textRange: f('textRange'), records: o.records,
+          };
+          Export.save(next);
+          return next;
+        };
+        sheet.addEventListener('click', async (e) => {
+          if (e.target.closest('[data-close]')) return UI.close();
+          const b = e.target.closest('[data-send]');
+          if (!b) return;
+          const opts = read();
+          const kind = b.dataset.send;
+          const stamp = D.today();
+          if (kind === 'text') { UI.copy(Export.text(opts.textRange), 'Скопировано — вставьте в Telegram или «Заметки»'); return; }
+          b.disabled = true;
+          try {
+            let where;
+            if (kind === 'ics') {
+              const { text, count } = Export.ics(opts);
+              if (!count) { UI.toast('В выбранном периоде нет уроков'); b.disabled = false; return; }
+              where = await Export.saveFile(`Уроки-${stamp}.ics`, text, 'ics');
+            } else where = await Export.savePdf(`Уроки-${stamp}.pdf`, Export.pdfHtml(opts));
+            if (where) UI.toast(window.desktop ? 'Файл сохранён. Отправьте его себе в Telegram или на почту.' : 'Готово');
+          } catch (err) { UI.toast('Не удалось сохранить файл: ' + (err.message || err)); }
+          b.disabled = false;
+        });
+        sheet.addEventListener('change', read);
       },
     });
   },

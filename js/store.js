@@ -27,19 +27,33 @@ const Store = (() => {
     credits: [], // оплаты вперёд / поступления: {id, studentId, date, amount, note}
     offs: [],    // выходные и отпуск: {id, from, to, note}
     settings: { currency: '₽', duration: 60, dayStart: 8, dayEnd: 22, goal: 0, theme: 'auto', horizon: 8 },
-    meta: { lastBackup: null, created: Date.now(), demo: false },
+    meta: { lastBackup: null, created: Date.now(), demo: false, ver: 3 },
   });
+
+  /* Версия 3: «оплачен» больше не флаг урока — всё считается от оплат ученика.
+     Старые отметки «оплачено» превращаются в оплаты, привязанные к уроку. */
+  function migrate(out) {
+    if ((out.meta.ver || 0) >= 3) return out;
+    out.lessons.forEach((l) => {
+      if (l.paid && l.paidBy !== 'credit' && Number(l.price) > 0) {
+        out.credits.push({ id: uid(), studentId: l.studentId, date: l.paidDate || l.date, amount: Number(l.price), note: 'Оплата урока', lessonId: l.id });
+      }
+      delete l.paid; delete l.paidBy; delete l.paidDate; delete l.noAuto;
+    });
+    out.meta.ver = 3;
+    return out;
+  }
 
   function normalize(d) {
     const def = defaults();
-    return {
+    return migrate({
       students: Array.isArray(d.students) ? d.students : [],
       lessons: Array.isArray(d.lessons) ? d.lessons : [],
       credits: Array.isArray(d.credits) ? d.credits : [],
       offs: Array.isArray(d.offs) ? d.offs : [],
       settings: { ...def.settings, ...(d.settings || {}) },
-      meta: { ...def.meta, ...(d.meta || {}) },
-    };
+      meta: { ...def.meta, ...(d.meta || {}), ver: (d.meta && d.meta.ver) || 0 },
+    });
   }
 
   function load() {
@@ -61,30 +75,37 @@ const Store = (() => {
   const price = (l) => Number(l.price) || 0;
   const nowKey = () => D.today() + T.fromMin(D.nowMinutes());
 
-  /* Предоплата: баланс = все оплаты − уроки, оплаченные «с баланса». Новые уроки списываются автоматически. */
-  function balanceOf(sid) {
-    const credit = data.credits.filter((c) => c.studentId === sid).reduce((a, c) => a + (Number(c.amount) || 0), 0);
-    const used = data.lessons.filter((l) => l.studentId === sid && PAYABLE.has(l.status) && l.paid && l.paidBy === 'credit')
-      .reduce((a, l) => a + price(l), 0);
-    return credit - used;
-  }
-
-  function settle() {
-    const today = D.today();
+  /* ----- Расчёты с учениками -----
+     У каждого ученика один баланс: оплаты пополняют его, проведённые уроки с него списываются.
+     Оплата, привязанная к уроку (галочка «Оплачено»), закрывает именно этот урок.
+     Остальные оплаты закрывают проведённые уроки по порядку, от старых к новым.
+     Всё считается на лету, поэтому предоплата списывается сразу, как только урок отмечен проведённым. */
+  let ledgerCache = null;
+  function computeLedger() {
+    const out = {};
+    const byId = new Map(data.lessons.map((l) => [l.id, l]));
     for (const s of data.students) {
-      let bal = balanceOf(s.id);
-      if (bal < 0) { // оплату удалили — снимаем отметку с последних уроков
-        const paid = data.lessons.filter((l) => l.studentId === s.id && PAYABLE.has(l.status) && l.paid && l.paidBy === 'credit').sort(sortLessons).reverse();
-        for (const l of paid) { if (bal >= 0) break; l.paid = false; l.paidBy = null; bal += price(l); }
+      const paid = new Set();
+      let pool = 0;
+      for (const c of data.credits) {
+        if (c.studentId !== s.id) continue;
+        const l = c.lessonId && byId.get(c.lessonId);
+        if (l && l.studentId === s.id && PAYABLE.has(l.status) && !paid.has(l.id)) paid.add(l.id);
+        else pool += Number(c.amount) || 0;
       }
-      if (bal <= 0) continue;
-      const unpaid = data.lessons.filter((l) => l.studentId === s.id && PAYABLE.has(l.status) && !l.paid && !l.noAuto && l.date <= today && price(l) > 0).sort(sortLessons);
-      for (const l of unpaid) {
-        if (bal < price(l)) break;
-        l.paid = true; l.paidBy = 'credit'; l.paidDate = today; bal -= price(l);
-      }
+      let unpaidSum = 0, blocked = false;
+      data.lessons.filter((l) => l.studentId === s.id && PAYABLE.has(l.status) && !paid.has(l.id)).sort(sortLessons).forEach((l) => {
+        const pr = price(l);
+        if (pr <= 0) { paid.add(l.id); return; }
+        if (!blocked && pool >= pr) { paid.add(l.id); pool -= pr; } else { blocked = true; unpaidSum += pr; }
+      });
+      const due = Math.max(0, unpaidSum - pool);
+      const prepaid = unpaidSum ? 0 : pool;
+      out[s.id] = { paid, due, prepaid, unpaidSum };
     }
+    return out;
   }
+  const ledger = () => ledgerCache || (ledgerCache = computeLedger());
 
   /* Регулярное расписание: создаёт уроки на несколько недель вперёд. Возвращает число созданных. */
   function generateRegular() {
@@ -104,7 +125,8 @@ const Store = (() => {
           if (data.offs.some((o) => d >= o.from && d <= o.to)) continue;
           if (d === today && key <= nowKey()) continue; // уроки, которые уже должны были пройти, не создаём
           data.lessons.push({
-            id: uid(), studentId: s.id, lang: r.lang || (s.lang === 'zh' ? 'zh' : 'en'), date: d, time: r.time,
+            id: `reg-${s.id}-${d}-${r.time.replace(':', '')}`, // одинаковый номер на всех устройствах, чтобы синхронизация не создавала дубли
+            studentId: s.id, lang: r.lang || (s.lang === 'zh' ? 'zh' : 'en'), date: d, time: r.time,
             duration: Number(r.duration) || Number(s.duration) || 60, price: Number(s.price) || 0, status: 'planned', paid: false,
             topic: '', covered: '', words: '', homework: '', note: '', seriesId: `reg-${s.id}-${r.wd}-${r.time}`, slot: key, auto: true,
           });
@@ -119,7 +141,7 @@ const Store = (() => {
   function cleanupRegular(s) {
     const now = nowKey();
     const rows = new Set((s.regular || []).map((r) => `${r.wd}|${r.time}`));
-    const drop = data.lessons.filter((l) => l.studentId === s.id && l.auto && l.status === 'planned' && !l.paid
+    const drop = data.lessons.filter((l) => l.studentId === s.id && l.auto && l.status === 'planned' && !data.credits.some((c) => c.lessonId === l.id)
       && `${l.date}|${l.time}` === l.slot && l.date + l.time > now
       && !(l.topic || l.covered || l.words || l.homework || l.note)
       && (s.archived || !rows.has(`${D.weekdayIdx(l.date)}|${l.time}`)));
@@ -128,10 +150,10 @@ const Store = (() => {
   }
 
   function emit() { listeners.forEach((fn) => fn()); }
-  function commit() { settle(); persist(); emit(); }
+  function commit() { ledgerCache = null; persist(); emit(); }
 
   window.addEventListener('storage', (e) => {
-    if (e.key === KEY) { data = load(); emit(); }
+    if (e.key === KEY) { data = load(); ledgerCache = null; emit(); }
   });
 
   const api = {
@@ -211,6 +233,8 @@ const Store = (() => {
         else {
           const i = data.lessons.findIndex((x) => x.id === l.id);
           if (i >= 0) data.lessons[i] = l; else data.lessons.push(l);
+          const link = data.credits.find((c) => c.lessonId === l.id);
+          if (link && Number(l.price) > 0) link.amount = Number(l.price); // оплата следует за ценой урока
         }
       });
       commit();
@@ -276,10 +300,17 @@ const Store = (() => {
     },
 
     /* ----- оплаты и баланс ----- */
-    balance: balanceOf,
-    credits(studentId) { return data.credits.filter((c) => c.studentId === studentId).sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)); },
-    addPayment(studentId, amount, { date = D.today(), note = '' } = {}) {
+    isPaid(l) {
+      if (PAYABLE.has(l.status)) { const e = ledger()[l.studentId]; return !!e && e.paid.has(l.id); }
+      return data.credits.some((c) => c.lessonId === l.id);
+    },
+    /* due — сколько ученик должен, prepaid — сколько осталось предоплаты */
+    account(studentId) { return ledger()[studentId] || { paid: new Set(), due: 0, prepaid: 0, unpaidSum: 0 }; },
+    payments(studentId) { return data.credits.filter((c) => c.studentId === studentId).sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id)); },
+    paymentFor(lessonId) { return data.credits.find((c) => c.lessonId === lessonId); },
+    addPayment(studentId, amount, { date = D.today(), note = '', lessonId = null } = {}) {
       const c = { id: uid(), studentId, date, amount: Number(amount) || 0, note };
+      if (lessonId) c.lessonId = lessonId;
       data.credits.push(c);
       commit();
       return c;
@@ -289,6 +320,14 @@ const Store = (() => {
       data.credits = data.credits.filter((c) => c.id !== id);
       commit();
       return () => { data.credits.push(removed); commit(); };
+    },
+    /* Галочка «Оплачено» в уроке: создаёт или убирает оплату, привязанную к этому уроку */
+    setLessonPaid(lessonId, paid) {
+      const l = api.lesson(lessonId);
+      if (!l) return;
+      const link = api.paymentFor(lessonId);
+      if (paid && !link) api.addPayment(l.studentId, price(l), { lessonId, note: 'Оплата урока' });
+      else if (!paid && link) api.deletePayment(link.id);
     },
 
     /* ----- выходные и отпуск ----- */
@@ -330,7 +369,7 @@ const Store = (() => {
       commit();
     },
     reset() { data = defaults(); commit(); },
-    loadDemo() { data = Demo.build(); generateRegular(); commit(); },
+    loadDemo() { data = migrate(Demo.build()); generateRegular(); commit(); },
   };
   return api;
 })();
@@ -344,45 +383,28 @@ const Calc = {
       const price = Number(l.price) || 0;
       if (PAYABLE.has(l.status)) {
         r.count++; r.minutes += Number(l.duration) || 0; r.earned += price;
-        if (l.paid) r.received += price; else r.unpaid += price;
+        if (Store.isPaid(l)) r.received += price; else r.unpaid += price;
       } else if (l.status === 'planned') { r.planned++; r.plannedSum += price; }
       else r.canceled++;
     }
     return r;
   },
-  /* неоплаченные проведённые уроки за всё время */
-  debts() {
-    return Store.data.lessons.filter((l) => PAYABLE.has(l.status) && !l.paid && l.date <= D.today() && (Number(l.price) || 0) > 0);
-  },
-  /* кто сколько должен (с учётом предоплаты) */
+  /* кто сколько должен */
   dueRows() {
-    const by = {};
-    Calc.debts().forEach((l) => { (by[l.studentId] = by[l.studentId] || []).push(l); });
-    return Object.entries(by).map(([sid, ls]) => {
-      const s = Store.student(sid);
-      const sum = ls.reduce((a, l) => a + (Number(l.price) || 0), 0);
-      const bal = Math.max(0, Store.balance(sid));
-      return { s, ls, sum, balance: bal, due: Math.max(0, sum - bal) };
-    }).filter((r) => r.s && r.due > 0).sort((a, b) => b.due - a.due);
+    return Store.data.students.map((s) => ({ s, ...Store.account(s.id) })).filter((r) => r.due > 0)
+      .map((r) => ({ s: r.s, due: r.due, ls: Store.lessonsOf(r.s.id).filter((l) => Calc.isPayable(l) && !Store.isPaid(l)), balance: r.prepaid }))
+      .sort((a, b) => b.due - a.due);
   },
   prepaidTotal() {
-    return Store.data.students.reduce((a, s) => a + Math.max(0, Store.balance(s.id)), 0);
+    return Store.data.students.reduce((a, s) => a + Store.account(s.id).prepaid, 0);
   },
   /* реально поступившие деньги за период (по дате оплаты) */
   cash(from, to) {
-    let sum = 0;
-    Store.data.credits.forEach((c) => { if (c.date >= from && c.date <= to) sum += Number(c.amount) || 0; });
-    Store.data.lessons.forEach((l) => {
-      if (PAYABLE.has(l.status) && l.paid && l.paidBy !== 'credit') {
-        const d = l.paidDate || l.date;
-        if (d >= from && d <= to) sum += Number(l.price) || 0;
-      }
-    });
-    return sum;
+    return Store.data.credits.reduce((a, c) => a + (c.date >= from && c.date <= to ? Number(c.amount) || 0 : 0), 0);
   },
   money(n) {
     const v = Math.round(Number(n) || 0);
-    return v.toLocaleString('ru-RU').replace(/ /g, ' ') + ' ' + Store.settings.currency;
+    return v.toLocaleString('ru-RU').replace(/\u00a0/g, '\u202f') + '\u00a0' + Store.settings.currency;
   },
 };
 

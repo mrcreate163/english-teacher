@@ -1,5 +1,6 @@
 /* Оболочка Electron: запускает приложение как обычную программу Windows/macOS/Linux */
-const { app, BrowserWindow, Menu, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Menu, shell, ipcMain, dialog } = require('electron');
+const os = require('os');
 const fs = require('fs');
 const path = require('path');
 
@@ -31,6 +32,40 @@ ipcMain.handle('backup-latest', () => {
   try { return { name: l.f, mtime: l.t, text: fs.readFileSync(path.join(backupDir(), l.f), 'utf8') }; } catch (e) { return null; }
 });
 ipcMain.handle('backup-open', () => { fs.mkdirSync(backupDir(), { recursive: true }); return shell.openPath(backupDir()); });
+
+/* Файлы «на телефон»: спрашиваем, куда сохранить (по умолчанию Документы\Мои уроки\Для телефона), и показываем файл в папке */
+const phoneDir = () => path.join(app.getPath('documents'), 'Мои уроки', 'Для телефона');
+
+async function askPath(event, name, filters) {
+  if (process.env.MOI_TEST_SAVE_DIR) return path.join(process.env.MOI_TEST_SAVE_DIR, name); // только для автоматических проверок
+  fs.mkdirSync(phoneDir(), { recursive: true });
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const r = await dialog.showSaveDialog(win, { title: 'Сохранить файл', defaultPath: path.join(phoneDir(), name), filters });
+  return r.canceled ? null : r.filePath;
+}
+
+ipcMain.handle('save-file', async (event, { name, data, kind }) => {
+  const filePath = await askPath(event, name, kind === 'ics' ? [{ name: 'Календарь', extensions: ['ics'] }] : [{ name: 'Текст', extensions: ['txt'] }]);
+  if (!filePath) return null;
+  fs.writeFileSync(filePath, data, 'utf8');
+  if (!process.env.MOI_TEST_SAVE_DIR) shell.showItemInFolder(filePath);
+  return filePath;
+});
+
+ipcMain.handle('save-pdf', async (event, { name, html }) => {
+  const filePath = await askPath(event, name, [{ name: 'PDF', extensions: ['pdf'] }]);
+  if (!filePath) return null;
+  const tmp = path.join(os.tmpdir(), `moi-uroki-${Date.now()}.html`);
+  fs.writeFileSync(tmp, html, 'utf8');
+  const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+  try {
+    await win.loadFile(tmp);
+    const pdf = await win.webContents.printToPDF({ preferCSSPageSize: true, printBackground: true });
+    fs.writeFileSync(filePath, pdf);
+  } finally { win.destroy(); fs.rm(tmp, () => {}); }
+  if (!process.env.MOI_TEST_SAVE_DIR) shell.showItemInFolder(filePath);
+  return filePath;
+});
 
 function createWindow() {
   const win = new BrowserWindow({

@@ -26,6 +26,7 @@ function renderChrome() {
       ${NAV.map((n) => `<a href="#/${n.id}" data-nav-id="${n.id}">${icon(n.icon)}<span>${n.label}</span><kbd>${n.key}</kbd></a>`).join('')}
     </nav>
     <div class="side-foot">
+      <button class="side-phone" data-act="phone">${icon('smartphone', 20)}<span>На телефон</span><kbd>P</kbd></button>
       <a href="#/settings" data-nav-id="settings">${icon('settings')}<span>Настройки</span></a>
       <button class="side-help" data-act="show-help">${icon('keyboard', 18)}<span>Горячие клавиши</span><kbd>?</kbd></button>
     </div>`;
@@ -99,7 +100,7 @@ function exportCSV() {
   rows.forEach((l) => {
     const s = Store.student(l.studentId);
     lines.push([l.date, l.time, s ? s.name : '', LANGS[l.lang] ? LANGS[l.lang].name : '', l.duration, l.price, STATUSES[l.status].short,
-      Calc.isPayable(l) ? (l.paid ? 'да' : 'нет') : '', l.topic].map(q).join(';'));
+      Calc.isPayable(l) ? (Store.isPaid(l) ? 'да' : 'нет') : '', l.topic].map(q).join(';'));
   });
   UI.download(`uroki-${from}_${to}.csv`, '﻿' + lines.join('\r\n'), 'text/csv');
   UI.toast(`Выгружено строк: ${rows.length}. Файл открывается в Excel.`);
@@ -107,6 +108,7 @@ function exportCSV() {
 
 function shiftSchedule(dir) {
   if (VS.schedMode === 'month') VS.schedDate = D.addMonths(VS.schedDate, dir);
+  else if (VS.schedMode === 'list') VS.schedDate = D.add(VS.schedDate, VS.agendaDays * dir);
   else VS.schedDate = D.add(VS.schedDate, (VS.schedMode === 'week' ? 7 : 1) * dir);
   render();
 }
@@ -116,13 +118,15 @@ function shiftMoney(dir) {
 }
 
 const Actions = {
-  'open-lesson': (el) => Forms.lesson({ id: el.dataset.id }),
+  'open-lesson': (el) => (isPhone() ? Forms.quick(el.dataset.id) : Forms.lesson({ id: el.dataset.id })),
+  'agenda-more': () => { VS.agendaDays += 14; render(); },
   'new-lesson': (el) => Forms.lesson({ date: el.dataset.date || (route().name === 'schedule' ? VS.schedDate : undefined), studentId: el.dataset.student, time: el.dataset.time }),
   'new-student': () => Forms.student(),
   'edit-student': (el) => Forms.student({ id: el.dataset.id }),
   'edit-regular': (el) => Forms.student({ id: el.dataset.id, focusRegular: true }),
   'report': (el) => Forms.report(el.dataset.id),
   'open-offs': () => Forms.off(),
+  'phone': () => Forms.phone(),
   'open-search': () => openSearch(),
   'show-help': () => showHelp(),
 
@@ -130,19 +134,22 @@ const Actions = {
     const id = el.dataset.id;
     Store.patchLesson(id, { status: 'done' });
     const l = Store.lesson(id);
-    if (l && l.paid) UI.toast('Урок проведён · оплата списана с баланса ученика');
-    else UI.toast('Урок отмечен как проведённый', { action: 'Уже оплачен', ms: 6500, onAction: () => Store.patchLesson(id, { paid: true, paidBy: 'cash', paidDate: D.today(), noAuto: false }) });
+    if (l && Store.isPaid(l)) {
+      const left = Store.account(l.studentId).prepaid;
+      UI.toast(`Урок проведён · списано с баланса${left ? `, осталось ${Calc.money(left)}` : ', предоплата закончилась'}`);
+    }
+    else UI.toast('Урок отмечен как проведённый', { action: 'Уже оплачен', ms: 6500, onAction: () => Store.setLessonPaid(id, true) });
   },
   'quick-cancel': (el) => {
     const id = el.dataset.id;
-    Store.patchLesson(id, { status: 'canceled', paid: false, paidBy: null });
+    Store.patchLesson(id, { status: 'canceled' });
     UI.toast('Урок отменён', { action: 'Вернуть', onAction: () => Store.patchLesson(id, { status: 'planned' }) });
   },
   'pay-student': (el) => Forms.payment(el.dataset.id),
   'pay-due': (el) => {
     const row = Calc.dueRows().find((r) => r.s.id === el.dataset.id);
     if (!row) return;
-    const c = Store.addPayment(row.s.id, row.due, { note: 'Оплата долга' });
+    const c = Store.addPayment(row.s.id, row.due, { note: 'Закрытие долга' });
     UI.toast(`${row.s.name}: оплата ${Calc.money(row.due)} принята`, { action: 'Отменить', onAction: () => Store.deletePayment(c.id), ms: 7000 });
   },
   'del-payment': (el) => {
@@ -164,7 +171,9 @@ const Actions = {
   },
   'go-day': (el) => {
     VS.schedDate = el.dataset.date;
-    if (el.classList.contains('sg-day') || el.dataset.openDay) { VS.schedMode = 'day'; prefs.set('schedMode2', 'day'); }
+    if (el.classList.contains('sg-day') || el.dataset.openDay) {
+      VS.schedMode = isPhone() ? 'list' : 'day'; VS.agendaDays = 14; prefs.set('schedMode3', VS.schedMode);
+    }
     render();
   },
   'sched-prev': () => shiftSchedule(-1),
@@ -194,7 +203,7 @@ const Actions = {
   'reset-all': async () => {
     const demo = Store.data.meta.demo;
     const ok = await UI.confirm(demo ? 'Начать с чистого листа?' : 'Удалить все данные?',
-      demo ? 'Пример данных будет удалён, и вы сможете добавить своих учеников.' : 'Будут удалены все ученики, уроки и записи. Это действие нельзя отменить — сначала сохраните копию.', demo ? 'Начать с нуля' : 'Удалить всё');
+      demo ? 'Пример данных будет удалён, и вы сможете добавить своих учеников.' : `Будут удалены все ученики, уроки и записи. Это действие нельзя отменить — сначала сохраните копию.`, demo ? 'Начать с нуля' : 'Удалить всё');
     if (!ok) return;
     Store.reset();
     location.hash = '#/today';
@@ -300,7 +309,7 @@ document.addEventListener('pointercancel', () => endDrag(true));
 /* ---------- Фильтры, поля и настройки ---------- */
 document.addEventListener('change', (e) => {
   const t = e.target;
-  if (t.name === 'schedMode') { VS.schedMode = t.value; prefs.set('schedMode2', t.value); render(); }
+  if (t.name === 'schedMode') { VS.schedMode = t.value; prefs.set('schedMode3', t.value); render(); }
   else if (t.name === 'moneyMode') { VS.moneyMode = t.value; render(); }
   else if (t.name === 'studentLang') { VS.studentLang = t.value; $('#student-list').innerHTML = Views._studentList(); }
   else if (t.id === 'show-archived') { VS.showArchived = t.checked; $('#student-list').innerHTML = Views._studentList(); }
@@ -316,7 +325,7 @@ document.addEventListener('change', (e) => {
     const reader = new FileReader();
     reader.onload = async () => {
       try { JSON.parse(reader.result); } catch (err) { UI.toast('Не удалось прочитать файл — это точно копия из приложения?'); return; }
-      const ok = await UI.confirm('Восстановить из копии?', 'Текущие данные в приложении будут заменены данными из файла.', 'Восстановить', true);
+      const ok = await UI.confirm('Восстановить из копии?', `Текущие данные в приложении будут заменены данными из файла.`, 'Восстановить', true);
       if (!ok) return;
       try { Store.importJSON(reader.result); UI.toast('Данные восстановлены'); } catch (err) { UI.toast(err.message); }
     };
@@ -342,7 +351,7 @@ function showHelp() {
     <div class="sheet-head"><h2>Горячие клавиши</h2><button class="icon-btn" data-close aria-label="Закрыть">${icon('x')}</button></div>
     <div class="sheet-body">
       <div class="help-group">Везде</div>
-      ${row('N', 'Новый урок')}${row('S', 'Новый ученик')}${row(`${MOD} K`, 'Поиск по ученикам и записям')}${row('1 2 3 4', 'Сегодня · Расписание · Ученики · Доходы')}${row(',', 'Настройки')}${row('Esc', 'Закрыть окно')}
+      ${row('N', 'Новый урок')}${row('S', 'Новый ученик')}${row(`${MOD} K`, 'Поиск по ученикам и записям')}${row('1 2 3 4', 'Сегодня · Расписание · Ученики · Доходы')}${row('P', 'Расписание на телефон')}${row(',', 'Настройки')}${row('Esc', 'Закрыть окно')}
       <div class="help-group">Расписание и доходы</div>
       ${row('← →', 'Назад / вперёд')}${row('T', 'К сегодняшнему дню')}${row('D W M', 'День / неделя / месяц (в расписании)')}
       <div class="help-group">В окне урока или ученика</div>
@@ -369,12 +378,13 @@ document.addEventListener('keydown', (e) => {
   else if (k === '3') go('#/students');
   else if (k === '4') go('#/money');
   else if (k === ',' || k === 'б') go('#/settings');
+  else if (k === 'p' || k === 'з') { e.preventDefault(); Forms.phone(); }
   else if (k === '?' || k === '/') { e.preventDefault(); showHelp(); }
   else if (e.key === 'ArrowLeft') { if (r === 'schedule') { e.preventDefault(); shiftSchedule(-1); } else if (r === 'money') { e.preventDefault(); shiftMoney(-1); } }
   else if (e.key === 'ArrowRight') { if (r === 'schedule') { e.preventDefault(); shiftSchedule(1); } else if (r === 'money') { e.preventDefault(); shiftMoney(1); } }
   else if (k === 't' || k === 'е') { if (r === 'schedule') { VS.schedDate = D.today(); render(); } else if (r === 'money') { VS.moneyDate = D.today(); render(); } }
   else if (r === 'schedule' && ['d', 'в', 'w', 'ц', 'm', 'ь'].includes(k)) {
-    VS.schedMode = { d: 'day', в: 'day', w: 'week', ц: 'week', m: 'month', ь: 'month' }[k]; prefs.set('schedMode2', VS.schedMode); render();
+    VS.schedMode = { d: 'day', в: 'day', w: 'week', ц: 'week', m: 'month', ь: 'month' }[k]; prefs.set('schedMode3', VS.schedMode); render();
   }
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[role=button][data-act]')) { e.preventDefault(); e.target.click(); }
 });
@@ -387,7 +397,7 @@ function openSearch() {
       ['Новый урок', 'plus', () => Forms.lesson({})], ['Новый ученик', 'plus', () => Forms.student()],
       ['Сегодня', 'sun', () => { location.hash = '#/today'; }], ['Расписание', 'calendar', () => { location.hash = '#/schedule'; }],
       ['Ученики', 'users', () => { location.hash = '#/students'; }], ['Доходы', 'wallet', () => { location.hash = '#/money'; }],
-      ['Выходные и отпуск', 'palm', () => Forms.off()], ['Настройки', 'settings', () => { location.hash = '#/settings'; }],
+      ['Расписание на телефон', 'smartphone', () => Forms.phone()], ['Выходные и отпуск', 'palm', () => Forms.off()], ['Настройки', 'settings', () => { location.hash = '#/settings'; }],
     ];
     if (!q.trim()) { nav.forEach(([t, ic, run]) => out.push({ group: 'Действия', title: t, icon: ic, run })); return out; }
     const res = Store.search(q);
@@ -472,6 +482,3 @@ if (window.desktop && Store.isEmpty()) {
   });
 }
 
-if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
-}

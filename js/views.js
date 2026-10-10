@@ -8,7 +8,8 @@ const prefs = {
 
 const VS = {
   schedDate: D.today(),
-  schedMode: prefs.get('schedMode2', window.innerWidth < 860 ? 'day' : 'week'),
+  schedMode: prefs.get('schedMode3', window.innerWidth < 860 ? 'list' : 'week'),
+  agendaDays: 14,
   moneyDate: D.today(),
   moneyMode: 'month',
   studentQuery: '',
@@ -80,7 +81,7 @@ const Views = {
     if (Store.isEmpty()) return Views._welcome(greet, t);
 
     return `
-    ${pageHead(`${greet}!`, fmt.cap(fmt.long(t)), `<button class="btn btn-primary hide-mobile" data-act="new-lesson">${icon('plus', 18)} Новый урок</button>`)}
+    ${pageHead(`${greet}!`, fmt.cap(fmt.long(t)), `<button class="btn btn-soft hide-mobile" data-act="phone" title="Отправить расписание на телефон">${icon('smartphone', 18)} На телефон</button><button class="btn btn-primary hide-mobile" data-act="new-lesson">${icon('plus', 18)} Новый урок</button>`)}
     ${Store.data.meta.demo ? `<div class="notice notice-info">${icon('sparkle', 18)}<span><b>Это пример данных</b> — потрогайте всё что угодно. Когда будете готовы, начните с чистого листа.</span><button class="btn btn-primary btn-sm" data-act="reset-all">Начать с нуля</button></div>` : ''}
     ${backupStale ? `<div class="notice notice-info">${icon('download', 18)}<span>Данные хранятся только в этом браузере. Сохраните резервную копию, чтобы ничего не потерять.</span><a class="btn btn-soft btn-sm" href="#/settings">Сохранить копию</a></div>` : ''}
     ${Store.storageOk ? '' : `<div class="notice notice-warn">${icon('alert', 18)}<span>Не удаётся сохранять данные (приватный режим браузера?). Изменения пропадут после закрытия.</span></div>`}
@@ -169,7 +170,7 @@ const Views = {
     const rel = l.date === t ? fmt.rel(l.date, l.time) : '';
     const hw = last && last.homework;
     const prevText = last ? [last.topic, last.covered].filter(Boolean).join(' — ') : '';
-    const bal = Store.balance(s.id);
+    const bal = Store.account(s.id).prepaid;
     return `
     <section class="hero" style="--c:${s.color}">
       <div class="hero-top"><span class="hero-label">${esc(when)}</span>${rel ? `<span class="rel">${rel}</span>` : ''}</div>
@@ -218,7 +219,8 @@ const Views = {
     const days = mode === 'week' ? weekDays : [date];
 
     let label;
-    if (mode === 'month') label = fmt.cap(fmt.month(date));
+    if (mode === 'list') label = date === t ? 'Ближайшие дни' : `С ${fmt.dm(date)}`;
+    else if (mode === 'month') label = fmt.cap(fmt.month(date));
     else if (mode === 'week') {
       const a = D.parse(ws), b = D.parse(D.add(ws, 6));
       label = a.getMonth() === b.getMonth()
@@ -226,13 +228,13 @@ const Views = {
         : `${a.getDate()} ${fmt.date(ws, { month: 'short' }).replace('.', '')} – ${b.getDate()} ${fmt.date(D.add(ws, 6), { month: 'short' }).replace('.', '')} ${b.getFullYear()}`;
     } else label = fmt.cap(fmt.long(date));
 
-    const range = mode === 'month' ? [D.monthStart(date), D.monthEnd(date)] : [ws, D.add(ws, 6)];
+    const range = mode === 'month' ? [D.monthStart(date), D.monthEnd(date)] : mode === 'list' ? [date, D.add(date, VS.agendaDays - 1)] : [ws, D.add(ws, 6)];
     const rangeLessons = Store.lessonsBetween(...range);
     const sm = Calc.summary(rangeLessons);
     const planMin = rangeLessons.filter((l) => l.status === 'planned').reduce((a, l) => a + l.duration, 0);
 
     return `
-    ${pageHead('Расписание', '', `<button class="btn btn-soft" data-act="open-offs" title="Отпуск, болезнь, праздники">${icon('palm', 18)}<span class="hide-mobile">Выходные</span></button>
+    ${pageHead('Расписание', '', `<button class="btn btn-soft hide-mobile" data-act="phone" title="Отправить расписание на телефон">${icon('smartphone', 18)} На телефон</button><button class="btn btn-soft" data-act="open-offs" title="Отпуск, болезнь, праздники">${icon('palm', 18)}<span class="hide-mobile">Выходные</span></button>
       <button class="btn btn-primary hide-mobile" data-act="new-lesson" data-date="${date}">${icon('plus', 18)} Новый урок</button>`)}
     <div class="sched-bar">
       <div class="sched-nav">
@@ -242,22 +244,46 @@ const Views = {
         <h2 class="sched-label">${esc(label)}</h2>
       </div>
       <div class="seg seg-sm" role="radiogroup">
+        <label><input type="radio" name="schedMode" value="list" ${mode === 'list' ? 'checked' : ''}><span>Список</span></label>
         <label><input type="radio" name="schedMode" value="day" ${mode === 'day' ? 'checked' : ''}><span>День</span></label>
-        <label><input type="radio" name="schedMode" value="week" ${mode === 'week' ? 'checked' : ''}><span>Неделя</span></label>
+        <label class="hide-mobile"><input type="radio" name="schedMode" value="week" ${mode === 'week' ? 'checked' : ''}><span>Неделя</span></label>
         <label><input type="radio" name="schedMode" value="month" ${mode === 'month' ? 'checked' : ''}><span>Месяц</span></label>
       </div>
     </div>
-    ${mode === 'month' ? '' : `<div class="daystrip ${mode === 'week' ? 'hide-desktop' : ''}">
+    ${mode === 'month' || mode === 'list' ? '' : `<div class="daystrip ${mode === 'week' ? 'hide-desktop' : ''}">
       ${weekDays.map((d, i) => {
         const n = Store.lessonsOn(d).filter((l) => l.status !== 'canceled').length;
         return `<button class="ds ${d === date ? 'on' : ''} ${d === t ? 'today' : ''}" data-act="go-day" data-date="${d}"><small>${WEEKDAYS[i]}</small><b>${D.parse(d).getDate()}</b><i class="${n ? 'has' : ''}">${n || ''}</i></button>`;
       }).join('')}
     </div>`}
-    ${mode === 'month' ? Views._month(date) : `<div class="card grid-card">${Views._grid(days)}</div>`}
+    ${mode === 'month' ? Views._month(date) : mode === 'list' ? Views._agenda(date) : `<div class="card grid-card">${Views._grid(days)}</div>`}
     <div class="sched-foot">
-      <span>${mode === 'month' ? 'В месяце' : 'На неделе'}: <b>${lessonsWord(sm.count + sm.planned)}</b> · ${fmt.hours(sm.minutes + planMin)} · ${Calc.money(sm.earned + sm.plannedSum)}</span>
-      <span class="muted">${mode === 'month' ? 'Нажмите на день, чтобы открыть его' : 'Нажмите на свободное время, чтобы добавить урок. Урок можно перетащить, чтобы перенести.'}</span>
+      <span>${mode === 'month' ? 'В месяце' : mode === 'list' ? 'В этот период' : 'На неделе'}: <b>${lessonsWord(sm.count + sm.planned)}</b> · ${fmt.hours(sm.minutes + planMin)} · ${Calc.money(sm.earned + sm.plannedSum)}</span>
+      <span class="muted">${mode === 'month' ? 'Нажмите на день, чтобы открыть его' : mode === 'list' ? '' : 'Нажмите на свободное время, чтобы добавить урок. Урок можно перетащить, чтобы перенести.'}</span>
     </div>`;
+  },
+
+  /* Список по дням: самый удобный вид на телефоне */
+  _agenda(from) {
+    const t = D.today();
+    const days = Array.from({ length: VS.agendaDays }, (_, i) => D.add(from, i));
+    const blocks = days.map((d) => {
+      const all = Store.lessonsOn(d);
+      const off = Store.offOn(d);
+      if (!all.length && d !== t && !off) return '';
+      const live = all.filter((l) => l.status !== 'canceled');
+      const sm = Calc.summary(all);
+      const head = d === t ? 'Сегодня' : d === D.add(t, 1) ? 'Завтра' : fmt.cap(fmt.date(d, { weekday: 'long' }));
+      return `<section class="ag-day ${d === t ? 'today' : ''}">
+        <div class="ag-head"><div><b>${esc(head)}</b><span>${esc(fmt.date(d, { day: 'numeric', month: 'long' }))}</span></div>
+          <div class="ag-meta">${live.length ? `${lessonsWord(live.length)} · ${Calc.money(sm.earned + sm.plannedSum)}` : ''}
+            <button class="icon-btn mini" data-act="new-lesson" data-date="${d}" aria-label="Добавить урок" title="Добавить урок на этот день">${icon('plus', 18)}</button></div></div>
+        ${off ? `<div class="ag-off">${icon('palm', 15)} ${esc(off.note || 'Выходной')}</div>` : ''}
+        <div class="list">${all.length ? all.map((l) => lessonRow(l)).join('') : '<p class="muted ag-empty">Уроков нет</p>'}</div>
+      </section>`;
+    }).join('');
+    return `<div class="agenda">${blocks || Bits.empty('calendar', 'В этот период уроков нет', 'Добавьте урок кнопкой «+» или выберите другие даты.')}
+      <button class="btn btn-soft full" data-act="agenda-more">Показать ещё 2 недели</button></div>`;
   },
 
   _month(date) {
@@ -312,7 +338,7 @@ const Views = {
       const blocks = items.map(({ l, s: st, e, col, n }) => {
         const stu = Store.student(l.studentId); if (!stu) return '';
         const top = (st - startH * 60) / 60, height = Math.max((e - st) / 60, 0.4);
-        const unpaid = Calc.isPayable(l) && !l.paid && l.price > 0;
+        const unpaid = Calc.isPayable(l) && !Store.isPaid(l) && l.price > 0;
         return `<div class="lb st-${l.status}" data-act="open-lesson" data-id="${l.id}" data-drag="1" tabindex="0" role="button"
           title="${esc(stu.name)} · ${l.time}–${T.end(l.time, l.duration)}${l.topic ? ' · ' + esc(l.topic) : ''}"
           style="--c:${stu.color};top:calc(${top} * var(--hh));height:calc(${height} * var(--hh) - 2px);left:calc(${col / n * 100}% + 2px);width:calc(${100 / n}% - 4px)">
@@ -371,8 +397,8 @@ const Views = {
       const ls = Store.lessonsOf(s.id);
       const sum = Calc.summary(ls);
       const next = Store.nextLesson(s.id);
-      const bal = Store.balance(s.id);
-      const due = Math.max(0, sum.unpaid - Math.max(0, bal));
+      const acc = Store.account(s.id);
+      const bal = acc.prepaid, due = acc.due;
       return `<a class="scard" href="#/students/${s.id}" style="--c:${s.color}">
         <div class="scard-top">${Bits.avatar(s, 46)}
           <div class="scard-name"><b>${esc(s.name)}</b>
@@ -395,9 +421,9 @@ const Views = {
     const ls = Store.lessonsOf(id);
     const sum = Calc.summary(ls);
     const next = Store.nextLesson(id);
-    const bal = Math.max(0, Store.balance(id));
-    const due = Math.max(0, sum.unpaid - bal);
-    const pays = Store.credits(id);
+    const acc = Store.account(id);
+    const bal = acc.prepaid, due = acc.due;
+    const pays = Store.payments(id);
     const shownPays = VS.showAllPayments ? pays : pays.slice(0, 3);
     const contact = s.contact ? (/^@\w+$/.test(s.contact) ? `<a href="https://t.me/${esc(s.contact.slice(1))}" target="_blank" rel="noopener">${icon('link', 15)} ${esc(s.contact)}</a>`
       : /^[+\d][\d\s()\-]{6,}$/.test(s.contact) ? `<a href="tel:${esc(s.contact.replace(/[^\d+]/g, ''))}">${icon('phone', 15)} ${esc(s.contact)}</a>` : `<span>${icon('phone', 15)} ${esc(s.contact)}</span>`) : '';
@@ -424,7 +450,11 @@ const Views = {
     <section class="tiles tiles-4">
       ${tile('Проведено', lessonsWord(sum.count), fmt.hours(sum.minutes))}
       ${tile('Заработано', Calc.money(sum.earned), `получено ${Calc.money(sum.received)}`)}
-      ${tile(due > 0 ? 'К оплате' : bal > 0 ? 'Предоплата' : 'Баланс', Calc.money(due > 0 ? due : bal), due > 0 ? `<button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>` : bal > 0 ? 'спишется с будущих уроков' : `<button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>`, { cls: due > 0 ? 'tile-warn' : bal > 0 ? 'tile-good' : '' })}
+      ${due > 0
+        ? tile('К оплате', Calc.money(due), `<button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>`, { cls: 'tile-warn' })
+        : bal > 0
+          ? tile('Предоплата', Calc.money(bal), `${s.price ? `хватит на ${lessonsWord(Math.floor(bal / s.price))} · ` : ''}<button class="link-btn" data-act="pay-student" data-id="${s.id}">Пополнить</button>`, { cls: 'tile-good' })
+          : tile('Баланс', Calc.money(0), `расчёты в порядке · <button class="link-btn" data-act="pay-student" data-id="${s.id}">Принять оплату</button>`)}
       ${tile('Следующий урок', next ? esc(fmt.cap(fmt.date(next.date, { weekday: 'short', day: 'numeric', month: 'short' }))) : '—', next ? `${next.time}–${T.end(next.time, next.duration)}` : 'не запланирован')}
     </section>
 
@@ -448,10 +478,11 @@ const Views = {
         <section class="block">
           <div class="block-head"><h2>Оплаты</h2><button class="link-btn-plain" data-act="pay-student" data-id="${s.id}">+ Принять</button></div>
           <div class="card side-card">
-            ${pays.length ? shownPays.map((c) => `<div class="pay-row"><div><b>${Calc.money(c.amount)}</b><small>${esc(fmt.date(c.date, { day: 'numeric', month: 'long' }))}${c.note ? ' · ' + esc(c.note) : ''}</small></div>
-              <button class="icon-btn mini" data-act="del-payment" data-id="${c.id}" aria-label="Удалить оплату" title="Удалить">${icon('trash', 16)}</button></div>`).join('')
+            <p class="muted small pay-explain">Оплаты пополняют баланс ученика. Когда вы отмечаете урок проведённым, его стоимость сразу списывается с баланса.</p>
+            ${pays.length ? shownPays.map((c) => { const pl = c.lessonId ? Store.lesson(c.lessonId) : null; return `<div class="pay-row"><div><b>${Calc.money(c.amount)}</b><small>${esc(fmt.date(c.date, { day: 'numeric', month: 'long' }))}${pl ? ' · за урок ' + esc(fmt.dm(pl.date)) : c.note ? ' · ' + esc(c.note) : ''}</small></div>
+              <button class="icon-btn mini" data-act="del-payment" data-id="${c.id}" aria-label="Удалить оплату" title="Удалить оплату">${icon('trash', 16)}</button></div>`; }).join('')
               + (pays.length > 3 ? `<button class="link-btn-plain" data-act="toggle-payments">${VS.showAllPayments ? 'Свернуть' : `Показать все (${pays.length})`}</button>` : '')
-              : '<p class="muted">Оплаты вперёд (пакеты, предоплата) появятся здесь. Разовые оплаты отмечаются прямо в уроке.</p>'}
+              : '<p class="muted">Пока оплат нет.</p>'}
             <button class="btn btn-soft btn-sm full" data-act="report" data-id="${s.id}">${icon('note', 16)} Отчёт за месяц</button>
           </div>
         </section>
