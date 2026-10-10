@@ -11,7 +11,8 @@ const unpacked = path.join(dist, 'win-unpacked');
 const win = process.platform === 'win32';
 
 function run(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { cwd: root, stdio: 'inherit', shell: win, ...opts });
+  // .cmd-файлы на Windows запускаются через оболочку, а обычные exe (makensis) — напрямую, чтобы пути с пробелами не ломались
+  const r = spawnSync(cmd, args, { cwd: root, stdio: 'inherit', shell: win && /\.cmd$/i.test(cmd), ...opts });
   if (r.error) { console.error(`Не удалось запустить ${cmd}: ${r.error.message}`); process.exit(1); }
   if (r.status !== 0) process.exit(r.status || 1);
 }
@@ -26,7 +27,7 @@ fs.rmSync(dist, { recursive: true, force: true });
 
 // 1. Упаковка приложения (без правки exe — её делаем сами, чтобы не требовался Wine/winCodeSign)
 const builder = path.join(root, 'node_modules', '.bin', win ? 'electron-builder.cmd' : 'electron-builder');
-run(builder, ['--win', '--dir', '--x64', '-c.win.signAndEditExecutable=false']);
+run(builder, ['--win', '--dir', '--x64', '--publish', 'never', '-c.win.signAndEditExecutable=false']);
 
 // 2. Значок и сведения о программе
 const exe = path.join(unpacked, 'MoiUroki.exe');
